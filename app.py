@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Générateur de Fiches Techniques Grand Compte")
+st.title("Generateur de Fiches Techniques Grand Compte")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 
 IMG_ROOT = "images"  # dossier racine des images dans le repo
