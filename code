@@ -1,0 +1,157 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+
+st.set_page_config(page_title="FT Grand Compte", page_icon="🚚", layout="wide")
+
+# ---------- CHARGEMENT DES DONNÉES ----------
+
+@st.cache_data
+def load_data():
+    xls = pd.ExcelFile("bdd_CG.xlsx")
+
+    # 1 ligne par véhicule
+    vehicules = pd.read_excel(xls, "FS_referentiel_produits_std_Ver")
+
+    cabines = pd.read_excel(xls, "CABINES")
+    moteurs = pd.read_excel(xls, "MOTEURS")
+    chassis = pd.read_excel(xls, "CHASSIS")
+    caisses = pd.read_excel(xls, "CAISSES")
+    frigo = pd.read_excel(xls, "FRIGO")
+    hayons = pd.read_excel(xls, "HAYONS")
+
+    return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
+
+
+vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
+
+st.title("Générateur de Fiches Techniques Grand Compte")
+st.caption("V1 – Base de test à partir de `bdd_CG.xlsx`")
+
+# ---------- FONCTION UTILITAIRE POUR LES FILTRES ----------
+
+def filtre_select(df, col, label):
+    """Crée un selectbox 'Tous + valeurs uniques' et renvoie le DF filtré + la valeur choisie."""
+    if col not in df.columns:
+        st.error(f"Colonne manquante dans la base : {col}")
+        return df, None
+
+    options = sorted([v for v in df[col].dropna().unique().tolist() if str(v).strip() != ""])
+    options_display = ["Tous"] + options
+    choix = st.selectbox(label, options_display)
+
+    if choix != "Tous":
+        df = df[df[col] == choix]
+
+    return df, choix
+
+# ---------- BARRE LATÉRALE : FILTRES VÉHICULE ----------
+
+st.sidebar.header("Filtres véhicule")
+
+df_filtre = vehicules.copy()
+
+df_filtre, code_pays = filtre_select(df_filtre, "code_pays", "Code pays")
+df_filtre, marque    = filtre_select(df_filtre, "Marque", "Marque")
+df_filtre, modele    = filtre_select(df_filtre, "Modele", "Modèle")
+df_filtre, code_pf   = filtre_select(df_filtre, "Code_PF", "Code PF")
+df_filtre, std_pf    = filtre_select(df_filtre, "Standard_PF", "Standard PF")
+
+# Filtres sur les codes de composants (facultatifs)
+df_filtre, cab_code   = filtre_select(df_filtre, "C_Cabine", "Cabine")
+df_filtre, ch_code    = filtre_select(df_filtre, "C_Chassis", "Châssis")
+df_filtre, caisse_code = filtre_select(df_filtre, "C_Caisse", "Caisse")
+df_filtre, mot_code   = filtre_select(df_filtre, "M_moteur", "Moteur")
+df_filtre, gf_code    = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigorifique")
+df_filtre, hay_code   = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon élévateur")
+
+st.subheader("Résultats du filtrage")
+st.write(f"{len(df_filtre)} combinaison(s) véhicule trouvée(s).")
+
+if df_filtre.empty:
+    st.warning("Aucun véhicule ne correspond aux filtres sélectionnés.")
+    st.stop()
+
+# ---------- CHOIX DE LA LIGNE VÉHICULE ----------
+
+def format_vehicule(row):
+    return f"{row['code_pays']} – {row['Marque']} {row['Modele']} – {row['Code_PF']} ({row['Standard_PF']})"
+
+indices = list(df_filtre.index)
+choix_idx = st.selectbox(
+    "Sélectionne le véhicule pour générer la FT :",
+    indices,
+    format_func=lambda i: format_vehicule(df_filtre.loc[i]),
+)
+
+veh = df_filtre.loc[choix_idx]
+
+st.markdown("---")
+st.subheader("Synthèse véhicule")
+
+colonnes_synthese = [
+    "code_pays",
+    "Marque",
+    "Modele",
+    "Code_PF",
+    "Standard_PF",
+    "catalogue_1\n PF",
+    "catalogue_2\nST",
+    "catalogue_3\n LIBRE",
+]
+
+cols_existantes = [c for c in colonnes_synthese if c in veh.index]
+st.table(veh[cols_existantes].to_frame(name="Valeur"))
+
+# ---------- IMAGES (si présentes dans la base) ----------
+
+image_cols = [c for c in ["Image Vehicule", "Image Client", "Image Carburant"] if c in veh.index]
+
+if image_cols:
+    st.subheader("Images associées")
+    img_cols = st.columns(len(image_cols))
+    for col_name, col_st in zip(image_cols, img_cols):
+        url = veh[col_name]
+        if isinstance(url, str) and url.strip():
+            with col_st:
+                st.caption(col_name)
+                st.image(url)
+        else:
+            with col_st:
+                st.caption(col_name)
+                st.info("Pas d'image définie.")
+
+# ---------- FONCTION D'AFFICHAGE DES COMPOSANTS ----------
+
+def affiche_composant(titre, code, df_ref, col_code_ref):
+    st.markdown("---")
+    st.subheader(titre)
+
+    if pd.isna(code) or str(code).strip() == "":
+        st.info("Aucun code renseigné pour ce composant.")
+        return
+
+    st.write(f"Code composant : **{code}**")
+
+    # recherche dans la base de référence
+    comp = df_ref[df_ref[col_code_ref] == code]
+
+    if comp.empty:
+        st.warning("Code non trouvé dans la base de référence.")
+        return
+
+    # On ne garde qu'une ligne (normalement unique)
+    comp_row = comp.iloc[0].dropna()
+    st.table(comp_row.to_frame(name="Valeur"))
+
+# ---------- DÉTAILS DES COMPOSANTS POUR LA FT ----------
+
+affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine")
+affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "c_chassis")
+affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "c_caisse")
+affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur")
+affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "c_groupe frigo")
+affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "c_hayon elevateur")
+
+st.markdown("---")
+st.success("Toutes ces informations pourront ensuite être mappées sur ton modèle de fiche technique PF (Word/Excel/etc.).")
