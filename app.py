@@ -4,6 +4,7 @@ import os
 from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.utils import column_index_from_string
 
 # ----------------- CONFIG APP -----------------
 
@@ -102,44 +103,139 @@ def format_vehicule(row):
     return " – ".join(champs)
 
 
-def affiche_composant(titre, code, df_ref, col_code_ref):
-    st.markdown("---")
-    st.subheader(titre)
-
-    if pd.isna(code) or str(code).strip() == "":
-        st.info("Aucun code renseigné pour ce composant.")
-        return
-
-    st.write(f"Code composant : **{code}**")
-
-    comp = df_ref[df_ref[col_code_ref] == code]
-
-    if comp.empty:
-        st.warning("Code non trouvé dans la base de référence.")
-        return
-
-    comp_row = comp.iloc[0].dropna()
-    st.table(comp_row.to_frame(name="Valeur"))
-
+# ----------------- FONCTION DE GENERATION DE LA FT -----------------
 
 def genere_ft_excel(veh):
     """
     Génère une fiche technique Excel à partir du modèle 'FT_Grand_Compte.xlsx'
     et de la ligne véhicule sélectionnée.
-    Si le modèle est absent, ne plante pas et renvoie None.
+
+    Remplit :
+      - en-tête (pays, marque, modèle, PF, etc.)
+      - images
+      - détails CABINE / MOTEUR / CHASSIS / CARROSSERIE / GROUPE FRIGO / HAYON
+      - zones OPTIONS associées quand il y a un code -OPTIONS dans la BDD véhicule.
     """
 
-    template_path = "FT_Grand_Compte.xlsx"   # adapte le nom si différent
+    template_path = "FT_Grand_Compte.xlsx"   # modèle
 
     if not os.path.exists(template_path):
-        st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo. "
-                "Ajoute-le à la racine pour activer la génération automatique.")
+        st.info(
+            "Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo. "
+            "Ajoute-le à la racine pour activer la génération automatique."
+        )
         return None
 
+    # Onglet 'date' (nom présent dans le fichier que tu as fourni)
     wb = load_workbook(template_path)
-    ws = wb.active  # ou wb['NomDeLaFeuille'] si besoin
+    ws = wb["date"]
 
-    # --- Remplissage texte : A ADAPTER à ta mise en page ---
+    # ----------- Fonctions internes pour transformer les BDD composants -----------
+
+    def get_prodopt_col(df):
+        """
+        Retourne le nom de la colonne 'Produit (P) ... Option (O)' pour un DF donné.
+        Gère les variantes 'Produit (P) / Option (O)' ou 'Produit (P) - Option (O)'.
+        """
+        for c in df.columns:
+            name = str(c).lower()
+            if "produit (p" in name and "option" in name:
+                return c
+        return None
+
+    def build_lines_from_row(row_series, code_col):
+        """
+        Transforme une ligne de la BDD composant en liste de lignes texte "Libellé : valeur",
+        en ignorant le code, les colonnes 'Produit (P) / Option (O)' et les 'zone libre'.
+        """
+        if row_series is None:
+            return []
+
+        lines = []
+        for col, val in row_series.items():
+            if pd.isna(val) or str(val).strip() == "":
+                continue
+            if col == code_col:
+                continue
+            name_lower = str(col).strip().lower()
+            if name_lower.startswith("zone libre"):
+                continue
+            if "produit (p" in name_lower and "option" in name_lower:
+                continue
+            if col == "_":
+                continue
+            lines.append(f"{col} : {val}")
+        return lines
+
+    def fill_lines(ws_local, start_cell, lines, max_rows):
+        """
+        Ecrit chaque ligne de 'lines' à partir de start_cell, sur max_rows lignes max.
+        Le texte est mis dans une seule colonne (celle de start_cell).
+        """
+        col_letters = "".join([ch for ch in start_cell if ch.isalpha()])
+        row_digits = "".join([ch for ch in start_cell if ch.isdigit()])
+        start_col = column_index_from_string(col_letters)
+        start_row = int(row_digits)
+
+        for i in range(max_rows):
+            cell = ws_local.cell(row=start_row + i, column=start_col)
+            cell.value = lines[i] if i < len(lines) else None
+
+    def find_component_row(df_ref, ref_code_col, code, prod_or_opt=None):
+        """
+        Récupère la ligne de référence dans la BDD composant correspondant à 'code'.
+        - prod_or_opt : 'P' ou 'O' pour filtrer sur la colonne 'Produit (P) / Option (O)'
+        - stratégie : match exact puis match "code contient / est contenu dans"
+        - si plusieurs lignes possibles : prend celle qui a le plus de champs non vides.
+        """
+        if not isinstance(code, str) or code.strip() == "" or code != code:
+            return None
+
+        col = ref_code_col
+        df = df_ref
+
+        prodopt_col = get_prodopt_col(df)
+
+        # 1) match exact
+        cand = df[df[col] == code]
+        if prod_or_opt and prodopt_col is not None:
+            cand = cand[cand[prodopt_col] == prod_or_opt]
+
+        # 2) match par sous-chaîne si rien trouvé
+        if cand.empty:
+            s_code = str(code)
+            mask = df[col].astype(str).apply(lambda v: s_code in v or v in s_code)
+            cand = df[mask]
+            if prod_or_opt and prodopt_col is not None:
+                cand = cand[cand[prodopt_col] == prod_or_opt]
+
+        if cand.empty:
+            return None
+
+        if len(cand) == 1:
+            return cand.iloc[0]
+
+        # 3) plusieurs lignes : on prend celle avec le plus de champs renseignés
+        best_idx = None
+        best_count = -1
+        for idx, row_ in cand.iterrows():
+            count = 0
+            for c, v in row_.items():
+                if c == col:
+                    continue
+                if isinstance(v, str) and v.strip() == "":
+                    continue
+                if pd.isna(v):
+                    continue
+                count += 1
+            if count > best_count:
+                best_count = count
+                best_idx = idx
+
+        return cand.loc[best_idx]
+
+    # ----------- 1) Remplissage de l’en-tête véhicule -----------
+
     mapping = {
         "code_pays": "C5",
         "Marque": "C6",
@@ -155,13 +251,12 @@ def genere_ft_excel(veh):
         if col_bdd in veh.index:
             ws[cell_excel] = veh[col_bdd]
 
-    # --- Images (véhicule / client / carburant) ---
+    # ----------- 2) Images (véhicule / client / carburant / logo PF) -----------
 
     img_veh_val = veh.get("Image Vehicule")
     img_client_val = veh.get("Image Client")
     img_carbu_val = veh.get("Image Carburant")
 
-    # ⚠️ Adapter ces sous-dossiers aux noms que tu as réellement dans /images
     img_veh_path = resolve_image_path(img_veh_val, "Image Vehicule")
     img_client_path = resolve_image_path(img_client_val, "Image Client")
     img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
@@ -170,25 +265,95 @@ def genere_ft_excel(veh):
     logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
     if os.path.exists(logo_pf_path):
         xl_logo = XLImage(logo_pf_path)
-        xl_logo.anchor = "B2"   # cellule d’ancrage à adapter
+        xl_logo.anchor = "B2"   # cellule d’ancrage à adapter si besoin
         ws.add_image(xl_logo)
 
-    if img_veh_path and os.path.exists(img_veh_path):
+    if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
         xl_img_veh = XLImage(img_veh_path)
-        xl_img_veh.anchor = "B15"  # adapter à ta mise en page
+        xl_img_veh.anchor = "B15"  # à adapter à ta mise en page
         ws.add_image(xl_img_veh)
 
-    if img_client_path and os.path.exists(img_client_path):
+    if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
         xl_img_client = XLImage(img_client_path)
-        xl_img_client.anchor = "H2"  # adapter
+        xl_img_client.anchor = "H2"  # à adapter
         ws.add_image(xl_img_client)
 
-    if img_carbu_path and os.path.exists(img_carbu_path):
+    if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
         xl_img_carbu = XLImage(img_carbu_path)
-        xl_img_carbu.anchor = "H15"  # adapter
+        xl_img_carbu.anchor = "H15"  # à adapter
         ws.add_image(xl_img_carbu)
 
-    # Sauvegarde dans un buffer pour téléchargement
+    # ----------- 3) Détails des composants + options -----------
+
+    # On utilise les dataframes globaux chargés plus bas
+    global cabines, moteurs, chassis, caisses, frigo, hayons
+
+    # Cabine
+    cab_code = veh.get("C_Cabine")
+    cab_opt_code = veh.get("C_Cabine-OPTIONS")
+
+    cab_row = find_component_row(cabines, "C_Cabine", cab_code, prod_or_opt="P")
+    cab_opt_row = find_component_row(cabines, "C_Cabine", cab_opt_code, prod_or_opt="O")
+
+    fill_lines(ws, "B18", build_lines_from_row(cab_row, "C_Cabine"), max_rows=17)
+    # zone options cabine → à partir de B38 (3 lignes)
+    fill_lines(ws, "B38", build_lines_from_row(cab_opt_row, "C_Cabine"), max_rows=3)
+
+    # Moteur
+    mot_code = veh.get("M_moteur")
+    mot_opt_code = veh.get("M_moteur-OPTIONS")
+
+    mot_row = find_component_row(moteurs, "M_moteur", mot_code, prod_or_opt="P")
+    mot_opt_row = find_component_row(moteurs, "M_moteur", mot_opt_code, prod_or_opt="O")
+
+    fill_lines(ws, "F18", build_lines_from_row(mot_row, "M_moteur"), max_rows=17)
+    fill_lines(ws, "F38", build_lines_from_row(mot_opt_row, "M_moteur"), max_rows=3)
+
+    # Châssis
+    ch_code = veh.get("C_Chassis")
+    ch_opt_code = veh.get("C_Chassis-OPTIONS")
+
+    ch_row = find_component_row(chassis, "c_chassis", ch_code, prod_or_opt="P")
+    ch_opt_row = find_component_row(chassis, "c_chassis", ch_opt_code, prod_or_opt="O")
+
+    fill_lines(ws, "H18", build_lines_from_row(ch_row, "c_chassis"), max_rows=17)
+    fill_lines(ws, "H38", build_lines_from_row(ch_opt_row, "c_chassis"), max_rows=3)
+
+    # Carrosserie (Caisse)
+    caisse_code = veh.get("C_Caisse")
+    caisse_opt_code = veh.get("C_Caisse-OPTIONS")
+
+    caisse_row = find_component_row(caisses, "c_caisse", caisse_code, prod_or_opt="P")
+    caisse_opt_row = find_component_row(caisses, "c_caisse", caisse_opt_code, prod_or_opt="O")
+
+    fill_lines(ws, "B40", build_lines_from_row(caisse_row, "c_caisse"), max_rows=5)
+    # CARROSSERIE - OPTIONS (cases à cocher) → B47 / B48
+    fill_lines(ws, "B47", build_lines_from_row(caisse_opt_row, "c_caisse"), max_rows=2)
+
+    # Groupe frigorifique
+    gf_code = veh.get("C_Groupe frigo")
+    gf_opt_code = veh.get("C_Groupe frigo-OPTIONS")
+
+    gf_row = find_component_row(frigo, "c_groupe frigo", gf_code, prod_or_opt="P")
+    gf_opt_row = find_component_row(frigo, "c_groupe frigo", gf_opt_code, prod_or_opt="O")
+
+    fill_lines(ws, "B50", build_lines_from_row(gf_row, "c_groupe frigo"), max_rows=6)
+    # GROUPE FRIGORIFIQUE - OPTIONS → à partir de B58
+    fill_lines(ws, "B58", build_lines_from_row(gf_opt_row, "c_groupe frigo"), max_rows=2)
+
+    # Hayon élévateur
+    hay_code = veh.get("C_Hayon elevateur")
+    hay_opt_code = veh.get("C_Hayon elevateur-OPTIONS")
+
+    hay_row = find_component_row(hayons, "c_hayon elevateur", hay_code, prod_or_opt="P")
+    hay_opt_row = find_component_row(hayons, "c_hayon elevateur", hay_opt_code, prod_or_opt="O")
+
+    fill_lines(ws, "B61", build_lines_from_row(hay_row, "c_hayon elevateur"), max_rows=5)
+    # HAYON ELEVATEUR - OPTIONS → à partir de B68
+    fill_lines(ws, "B68", build_lines_from_row(hay_opt_row, "c_hayon elevateur"), max_rows=3)
+
+    # ----------- 4) Sauvegarde dans un buffer pour téléchargement -----------
+
     output = BytesIO()
     wb.save(output)
     output.seek(0)
@@ -259,7 +424,6 @@ img_veh_val = veh.get("Image Vehicule")
 img_client_val = veh.get("Image Client")
 img_carbu_val = veh.get("Image Carburant")
 
-#  Adapter ces sous-dossiers si tes noms sont différents
 img_veh_path = resolve_image_path(img_veh_val, "Image Vehicule")
 img_client_path = resolve_image_path(img_client_val, "Image Client")
 img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
@@ -275,15 +439,6 @@ with col2:
 
 with col3:
     show_image(img_carbu_path, "Picto carburant")
-
-# ----------------- DETAIL COMPOSANTS -----------------
-
-affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine")
-affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "c_chassis")
-affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "c_caisse")
-affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur")
-affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "c_groupe frigo")
-affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "c_hayon elevateur")
 
 # ----------------- BOUTON DE TÉLÉCHARGEMENT FT -----------------
 
@@ -302,4 +457,3 @@ if ft_file is not None:
     )
 else:
     st.info("Ajoute le modèle 'FT_Grand_Compte.xlsx' dans le repo pour activer le téléchargement.")
-
