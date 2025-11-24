@@ -5,6 +5,7 @@ from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
+from openpyxl.cell.cell import MergedCell  # <--- important pour détecter les cellules fusionnées
 
 # ----------------- CONFIG APP -----------------
 
@@ -171,9 +172,9 @@ def genere_ft_excel(veh):
         """
         Ecrit chaque ligne de 'lines' à partir de start_cell, sur max_rows lignes max.
         Le texte est mis dans une seule colonne (celle de start_cell).
+        Ignore les cellules fusionnées (MergedCell) qui ne sont pas éditables.
         """
         if not lines:
-            # rien à écrire, on ne touche pas à la feuille
             return
 
         col_letters = "".join([ch for ch in start_cell if ch.isalpha()])
@@ -181,9 +182,23 @@ def genere_ft_excel(veh):
         start_col = column_index_from_string(col_letters)
         start_row = int(row_digits)
 
+        line_idx = 0
         for i in range(max_rows):
+            if line_idx >= len(lines):
+                # on efface les éventuelles anciennes valeurs restantes si la cellule est éditable
+                cell = ws_local.cell(row=start_row + i, column=start_col)
+                if isinstance(cell, MergedCell):
+                    continue
+                cell.value = None
+                continue
+
             cell = ws_local.cell(row=start_row + i, column=start_col)
-            cell.value = lines[i] if i < len(lines) else None
+            # Si cellule fusionnée : on ne touche pas (sinon AttributeError)
+            if isinstance(cell, MergedCell):
+                continue
+
+            cell.value = lines[line_idx]
+            line_idx += 1
 
     def find_component_row(df_ref, ref_code_col, code, prod_or_opt=None):
         """
@@ -299,6 +314,7 @@ def genere_ft_excel(veh):
     cab_opt_row = find_component_row(cabines, "C_Cabine", cab_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B18", build_lines_from_row(cab_row, "C_Cabine"), max_rows=17)
+    # B38–B40 → B39 est fusionnée → sera ignorée
     fill_lines(ws, "B38", build_lines_from_row(cab_opt_row, "C_Cabine"), max_rows=3)
 
     # Moteur
@@ -456,4 +472,3 @@ if ft_file is not None:
     )
 else:
     st.info("Ajoute le modèle 'FT_Grand_Compte.xlsx' dans le repo pour activer le téléchargement.")
-
