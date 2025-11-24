@@ -126,9 +126,9 @@ def genere_ft_excel(veh):
         )
         return None
 
-    # Onglet 'date' (nom présent dans le fichier que tu as fourni)
-    wb = load_workbook(template_path)
-    ws = wb["date"]
+    # IMPORTANT : read_only=False pour pouvoir écrire dans les cellules
+    wb = load_workbook(template_path, read_only=False, data_only=False)
+    ws = wb["date"]  # adapter si le nom de l’onglet change
 
     # ----------- Fonctions internes pour transformer les BDD composants -----------
 
@@ -172,6 +172,10 @@ def genere_ft_excel(veh):
         Ecrit chaque ligne de 'lines' à partir de start_cell, sur max_rows lignes max.
         Le texte est mis dans une seule colonne (celle de start_cell).
         """
+        if not lines:
+            # rien à écrire, on ne touche pas à la feuille
+            return
+
         col_letters = "".join([ch for ch in start_cell if ch.isalpha()])
         row_digits = "".join([ch for ch in start_cell if ch.isdigit()])
         start_col = column_index_from_string(col_letters)
@@ -265,27 +269,26 @@ def genere_ft_excel(veh):
     logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
     if os.path.exists(logo_pf_path):
         xl_logo = XLImage(logo_pf_path)
-        xl_logo.anchor = "B2"   # cellule d’ancrage à adapter si besoin
+        xl_logo.anchor = "B2"
         ws.add_image(xl_logo)
 
     if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
         xl_img_veh = XLImage(img_veh_path)
-        xl_img_veh.anchor = "B15"  # à adapter à ta mise en page
+        xl_img_veh.anchor = "B15"
         ws.add_image(xl_img_veh)
 
     if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
         xl_img_client = XLImage(img_client_path)
-        xl_img_client.anchor = "H2"  # à adapter
+        xl_img_client.anchor = "H2"
         ws.add_image(xl_img_client)
 
     if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
         xl_img_carbu = XLImage(img_carbu_path)
-        xl_img_carbu.anchor = "H15"  # à adapter
+        xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
     # ----------- 3) Détails des composants + options -----------
 
-    # On utilise les dataframes globaux chargés plus bas
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
     # Cabine
@@ -296,7 +299,6 @@ def genere_ft_excel(veh):
     cab_opt_row = find_component_row(cabines, "C_Cabine", cab_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B18", build_lines_from_row(cab_row, "C_Cabine"), max_rows=17)
-    # zone options cabine → à partir de B38 (3 lignes)
     fill_lines(ws, "B38", build_lines_from_row(cab_opt_row, "C_Cabine"), max_rows=3)
 
     # Moteur
@@ -327,7 +329,6 @@ def genere_ft_excel(veh):
     caisse_opt_row = find_component_row(caisses, "c_caisse", caisse_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B40", build_lines_from_row(caisse_row, "c_caisse"), max_rows=5)
-    # CARROSSERIE - OPTIONS (cases à cocher) → B47 / B48
     fill_lines(ws, "B47", build_lines_from_row(caisse_opt_row, "c_caisse"), max_rows=2)
 
     # Groupe frigorifique
@@ -338,7 +339,6 @@ def genere_ft_excel(veh):
     gf_opt_row = find_component_row(frigo, "c_groupe frigo", gf_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B50", build_lines_from_row(gf_row, "c_groupe frigo"), max_rows=6)
-    # GROUPE FRIGORIFIQUE - OPTIONS → à partir de B58
     fill_lines(ws, "B58", build_lines_from_row(gf_opt_row, "c_groupe frigo"), max_rows=2)
 
     # Hayon élévateur
@@ -349,7 +349,6 @@ def genere_ft_excel(veh):
     hay_opt_row = find_component_row(hayons, "c_hayon elevateur", hay_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B61", build_lines_from_row(hay_row, "c_hayon elevateur"), max_rows=5)
-    # HAYON ELEVATEUR - OPTIONS → à partir de B68
     fill_lines(ws, "B68", build_lines_from_row(hay_opt_row, "c_hayon elevateur"), max_rows=3)
 
     # ----------- 4) Sauvegarde dans un buffer pour téléchargement -----------
@@ -457,3 +456,4 @@ if ft_file is not None:
     )
 else:
     st.info("Ajoute le modèle 'FT_Grand_Compte.xlsx' dans le repo pour activer le téléchargement.")
+
