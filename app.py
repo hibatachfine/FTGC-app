@@ -96,23 +96,6 @@ def filtre_select(df, col, label):
     return df, choix
 
 
-def options_select(df_full, col, label):
-    """
-    Select pour les codes options.
-    IMPORTANT : ne modifie pas df_filtre, lit directement dans la BDD complète.
-    """
-    if col not in df_full.columns:
-        return None
-
-    vals = df_full[col].dropna()
-    vals = [v for v in vals.unique().tolist() if str(v).strip() != ""]
-    vals = sorted(vals)
-
-    options_display = ["Tous"] + vals
-    choix = st.sidebar.selectbox(label, options_display)
-    return choix
-
-
 def format_vehicule(row):
     champs = []
     for c in ["code_pays", "Marque", "Modele", "Code_PF", "Standard_PF"]:
@@ -236,7 +219,7 @@ def genere_ft_excel(
 
         return prod_code, opt_code
 
-    # --------- 1) Remplissage texte en-tête ---------
+    # --------- 1) Remplissage texte en-tête (comme avant) ---------
 
     mapping = {
         "code_pays": "C5",
@@ -253,7 +236,7 @@ def genere_ft_excel(
         if col_bdd in veh.index:
             ws[cell_excel] = veh[col_bdd]
 
-    # --------- 2) Images ---------
+    # --------- 2) Images (véhicule / client / carburant / logo PF) ---------
 
     img_veh_val = veh.get("Image Vehicule")
     img_client_val = veh.get("Image Client")
@@ -263,28 +246,29 @@ def genere_ft_excel(
     img_client_path = resolve_image_path(img_client_val, "Image Client")
     img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
 
+    # Logo PF fixe (optionnel)
     logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
     if os.path.exists(logo_pf_path):
         xl_logo = XLImage(logo_pf_path)
-        xl_logo.anchor = "B2"
+        xl_logo.anchor = "B2"   # cellule d’ancrage à adapter
         ws.add_image(xl_logo)
 
     if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
         xl_img_veh = XLImage(img_veh_path)
-        xl_img_veh.anchor = "B15"
+        xl_img_veh.anchor = "B15"  # adapter à ta mise en page
         ws.add_image(xl_img_veh)
 
     if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
         xl_img_client = XLImage(img_client_path)
-        xl_img_client.anchor = "H2"
+        xl_img_client.anchor = "H2"  # adapter
         ws.add_image(xl_img_client)
 
     if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
         xl_img_carbu = XLImage(img_carbu_path)
-        xl_img_carbu.anchor = "H15"
+        xl_img_carbu.anchor = "H15"  # adapter
         ws.add_image(xl_img_carbu)
 
-    # --------- 3) Détails composants + options ---------
+    # --------- 3) Détails composants + options (NOUVEAU) ---------
 
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
@@ -332,7 +316,7 @@ def genere_ft_excel(
     write_block("B40", build_values(caisse_prod_row, "c_caisse"), max_rows=5)
     write_block("B47", build_values(caisse_opt_row, "c_caisse"), max_rows=2)
 
-    # GROUPE FRIGO
+    # GROUPE FRIGORIFIQUE
     gf_prod_code, gf_opt_code = choose_codes(
         gf_prod_choice, gf_opt_choice,
         veh.get("C_Groupe frigo"),
@@ -354,8 +338,9 @@ def genere_ft_excel(
     write_block("B61", build_values(hay_prod_row, "c_hayon elevateur"), max_rows=5)
     write_block("B68", build_values(hay_opt_row, "c_hayon elevateur"), max_rows=3)
 
-    # --------- 4) DIMENSIONS (tableaux) ---------
+    # --------- 4) DIMENSIONS (tableaux en haut de la FT) ---------
 
+    # Noms de colonnes de la BDD véhicule (adapter si besoin à tes vrais intitulés)
     col_Wint = "W int\n utile \nsur plinthe"
     col_Lint = "L int \nutile \nsur plinthe"
     col_Hint = "H int"
@@ -370,6 +355,7 @@ def genere_ft_excel(
     col_CU = "CU"
     col_volume = "Volume"
 
+    # Tableau "Dimensions en mm" : cellules à adapter si besoin
     ws["I5"] = veh.get(col_Wint)
     ws["I6"] = veh.get(col_Lint)
     ws["I7"] = veh.get(col_Hint)
@@ -381,12 +367,13 @@ def genere_ft_excel(
     ws["K7"] = veh.get(col_F)
     ws["K8"] = veh.get(col_X)
 
+    # Tableau PTAC / CU / Volume / Palettes
     ws["I10"] = veh.get(col_PTAC)
     ws["I11"] = veh.get(col_CU)
     ws["I12"] = veh.get(col_volume)
     ws["I13"] = veh.get(col_pal)
 
-    # --------- Sauvegarde ---------
+    # --------- Sauvegarde dans un buffer pour téléchargement ---------
 
     output = BytesIO()
     wb.save(output)
@@ -412,25 +399,25 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# Filtres composants : PRODUIT = sur df_filtre, OPTIONS = sur vehicules (df complet)
+# Filtres composants : 1 filtre code produit + 1 filtre code options pour chaque
 
 df_filtre, cab_prod_choice = filtre_select(df_filtre, "C_Cabine", "Cabine - code produit")
-cab_opt_choice = options_select(vehicules, "C_Cabine-OPTIONS", "Cabine - code options")
+df_filtre, cab_opt_choice = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
 
 df_filtre, mot_prod_choice = filtre_select(df_filtre, "M_moteur", "Moteur - code produit")
-mot_opt_choice = options_select(vehicules, "M_moteur-OPTIONS", "Moteur - code options")
+df_filtre, mot_opt_choice = filtre_select(df_filtre, "M_moteur-OPTIONS", "Moteur - code options")
 
 df_filtre, ch_prod_choice = filtre_select(df_filtre, "C_Chassis", "Châssis - code produit")
-ch_opt_choice = options_select(vehicules, "C_Chassis-OPTIONS", "Châssis - code options")
+df_filtre, ch_opt_choice = filtre_select(df_filtre, "C_Chassis-OPTIONS", "Châssis - code options")
 
 df_filtre, caisse_prod_choice = filtre_select(df_filtre, "C_Caisse", "Caisse - code produit")
-caisse_opt_choice = options_select(vehicules, "C_Caisse-OPTIONS", "Caisse - code options")
+df_filtre, caisse_opt_choice = filtre_select(df_filtre, "C_Caisse-OPTIONS", "Caisse - code options")
 
 df_filtre, gf_prod_choice = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigo - code produit")
-gf_opt_choice = options_select(vehicules, "C_Groupe frigo-OPTIONS", "Groupe frigo - code options")
+df_filtre, gf_opt_choice = filtre_select(df_filtre, "C_Groupe frigo-OPTIONS", "Groupe frigo - code options")
 
 df_filtre, hay_prod_choice = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon - code produit")
-hay_opt_choice = options_select(vehicules, "C_Hayon elevateur-OPTIONS", "Hayon - code options")
+df_filtre, hay_opt_choice = filtre_select(df_filtre, "C_Hayon elevateur-OPTIONS", "Hayon - code options")
 
 st.subheader("Résultats du filtrage")
 st.write(f"{len(df_filtre)} combinaison(s) véhicule trouvée(s).")
@@ -488,7 +475,7 @@ with col2:
 with col3:
     show_image(img_carbu_path, "Picto carburant")
 
-# ----------------- DETAIL COMPOSANTS -----------------
+# ----------------- DETAIL COMPOSANTS (comme dans ton ancien code) -----------------
 
 affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine")
 affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "c_chassis")
