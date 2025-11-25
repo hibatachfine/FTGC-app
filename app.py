@@ -18,27 +18,25 @@ st.set_page_config(
 st.title("Generateur de Fiches Techniques Grand Compte")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 
-IMG_ROOT = "images"  # dossier racine des images dans le repo
+IMG_ROOT = "images"  # dossier racine des images
 
 
 # ----------------- FONCTIONS UTILES -----------------
 
 def resolve_image_path(cell_value, subdir):
     """
-    Prend la valeur de la cellule Excel (chemin complet, nom de fichier ou URL)
-    et renvoie un chemin utilisable par Streamlit / openpyxl.
-    - subdir = sous-dossier dans 'images' (ex: 'Image Vehicule')
+    Transforme la valeur Excel (chemin, nom de fichier ou URL) en chemin exploitable.
     """
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
 
     val = cell_value.strip()
 
-    # Cas URL -> on renvoie tel quel
-    if val.lower().startswith("http://") or val.lower().startswith("https://"):
+    # URL
+    if val.lower().startswith(("http://", "https://")):
         return val
 
-    # Cas chemin Windows / nom simple -> on garde juste le fichier
+    # Chemin local / nom de fichier
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
 
@@ -79,15 +77,16 @@ def load_data():
 
 
 def filtre_select(df, col, label):
-    """Crée un selectbox 'Tous + valeurs uniques' dans la sidebar et renvoie le DF filtré."""
+    """Selectbox simple dans la sidebar sur une colonne (avec 'Tous')."""
     if col not in df.columns:
         st.sidebar.write(f"(colonne '{col}' absente)")
         return df, None
 
-    options = sorted(
-        [v for v in df[col].dropna().unique().tolist() if str(v).strip() != ""]
-    )
-    options_display = ["Tous"] + options
+    vals = df[col].dropna()
+    vals = [v for v in vals.unique().tolist() if str(v).strip() != ""]
+    vals = sorted(vals)
+
+    options_display = ["Tous"] + vals
     choix = st.sidebar.selectbox(label, options_display)
 
     if choix != "Tous":
@@ -104,27 +103,7 @@ def format_vehicule(row):
     return " – ".join(champs)
 
 
-def affiche_composant(titre, code, df_ref, col_code_ref):
-    st.markdown("---")
-    st.subheader(titre)
-
-    if pd.isna(code) or str(code).strip() == "":
-        st.info("Aucun code renseigné pour ce composant.")
-        return
-
-    st.write(f"Code composant : **{code}**")
-
-    comp = df_ref[df_ref[col_code_ref] == code]
-
-    if comp.empty:
-        st.warning("Code non trouvé dans la base de référence.")
-        return
-
-    comp_row = comp.iloc[0].dropna()
-    st.table(comp_row.to_frame(name="Valeur"))
-
-
-# ----------------- FONCTION DE GENERATION DE LA FT -----------------
+# ----------------- GENERATION DE LA FT -----------------
 
 def genere_ft_excel(
     veh,
@@ -141,23 +120,19 @@ def genere_ft_excel(
     (code produit + code options) pour chaque composant.
     """
 
-    template_path = "FT_Grand_Compte.xlsx"   # adapte le nom si différent
+    template_path = "FT_Grand_Compte.xlsx"
 
     if not os.path.exists(template_path):
-        st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo. "
-                "Ajoute-le à la racine pour activer la génération automatique.")
+        st.error("Modèle FT_Grand_Compte.xlsx manquant dans le dossier.")
         return None
 
     wb = load_workbook(template_path, read_only=False, data_only=False)
-    ws = wb["date"]  # feuille de la FT
+    ws = wb["date"]  # nom de la feuille dans le modèle
 
-    # --------- Helpers internes ---------
+    # ----- Helpers internes -----
 
     def build_values(row, code_col):
-        """
-        Transforme une ligne de BDD composant en liste de valeurs (sans libellé).
-        Ignore colonne code, col Produit/Option, zones libres, etc.
-        """
+        """Transforme une ligne de BDD composant en liste de valeurs (sans libellé)."""
         if row is None:
             return []
         vals = []
@@ -177,10 +152,9 @@ def genere_ft_excel(
         return vals
 
     def write_block(start_cell, values, max_rows):
-        """Ecrit les valeurs ligne par ligne à partir de start_cell (une seule colonne)."""
+        """Ecrit les valeurs ligne par ligne à partir de start_cell (1 seule colonne)."""
         if max_rows <= 0:
             return
-
         col_letters = "".join(ch for ch in start_cell if ch.isalpha())
         row_digits = "".join(ch for ch in start_cell if ch.isdigit())
         start_col = column_index_from_string(col_letters)
@@ -219,9 +193,9 @@ def genere_ft_excel(
 
         return prod_code, opt_code
 
-    # --------- 1) Remplissage texte en-tête (comme avant) ---------
+    # ----- 1) EN-TÊTE GÉNÉRALE (pays, marque, modèle, PF, etc.) -----
 
-    mapping = {
+    mapping_header = {
         "code_pays": "C5",
         "Marque": "C6",
         "Modele": "C7",
@@ -231,12 +205,11 @@ def genere_ft_excel(
         "catalogue_2\nST": "C11",
         "catalogue_3\n LIBRE": "C12",
     }
-
-    for col_bdd, cell_excel in mapping.items():
+    for col_bdd, cell_addr in mapping_header.items():
         if col_bdd in veh.index:
-            ws[cell_excel] = veh[col_bdd]
+            ws[cell_addr] = veh[col_bdd]
 
-    # --------- 2) Images (véhicule / client / carburant / logo PF) ---------
+    # ----- 2) IMAGES (véhicule, client, carburant, logo PF) -----
 
     img_veh_val = veh.get("Image Vehicule")
     img_client_val = veh.get("Image Client")
@@ -246,29 +219,28 @@ def genere_ft_excel(
     img_client_path = resolve_image_path(img_client_val, "Image Client")
     img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
 
-    # Logo PF fixe (optionnel)
     logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
     if os.path.exists(logo_pf_path):
         xl_logo = XLImage(logo_pf_path)
-        xl_logo.anchor = "B2"   # cellule d’ancrage à adapter
+        xl_logo.anchor = "B2"
         ws.add_image(xl_logo)
 
     if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
         xl_img_veh = XLImage(img_veh_path)
-        xl_img_veh.anchor = "B15"  # adapter à ta mise en page
+        xl_img_veh.anchor = "B15"
         ws.add_image(xl_img_veh)
 
     if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
         xl_img_client = XLImage(img_client_path)
-        xl_img_client.anchor = "H2"  # adapter
+        xl_img_client.anchor = "H2"
         ws.add_image(xl_img_client)
 
     if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
         xl_img_carbu = XLImage(img_carbu_path)
-        xl_img_carbu.anchor = "H15"  # adapter
+        xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # --------- 3) Détails composants + options (NOUVEAU) ---------
+    # ----- 3) COMPOSANTS & OPTIONS -----
 
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
@@ -316,7 +288,7 @@ def genere_ft_excel(
     write_block("B40", build_values(caisse_prod_row, "c_caisse"), max_rows=5)
     write_block("B47", build_values(caisse_opt_row, "c_caisse"), max_rows=2)
 
-    # GROUPE FRIGORIFIQUE
+    # GROUPE FRIGO
     gf_prod_code, gf_opt_code = choose_codes(
         gf_prod_choice, gf_opt_choice,
         veh.get("C_Groupe frigo"),
@@ -327,7 +299,7 @@ def genere_ft_excel(
     write_block("B50", build_values(gf_prod_row, "c_groupe frigo"), max_rows=6)
     write_block("B58", build_values(gf_opt_row, "c_groupe frigo"), max_rows=2)
 
-    # HAYON ÉLÉVATEUR
+    # HAYON
     hay_prod_code, hay_opt_code = choose_codes(
         hay_prod_choice, hay_opt_choice,
         veh.get("C_Hayon elevateur"),
@@ -338,9 +310,9 @@ def genere_ft_excel(
     write_block("B61", build_values(hay_prod_row, "c_hayon elevateur"), max_rows=5)
     write_block("B68", build_values(hay_opt_row, "c_hayon elevateur"), max_rows=3)
 
-    # --------- 4) DIMENSIONS (tableaux en haut de la FT) ---------
+    # ----- 4) DIMENSIONS -----
+    # (on garde ce qui marchait : tu m'as dit "ok pour les tableaux")
 
-    # Noms de colonnes de la BDD véhicule (adapter si besoin à tes vrais intitulés)
     col_Wint = "W int\n utile \nsur plinthe"
     col_Lint = "L int \nutile \nsur plinthe"
     col_Hint = "H int"
@@ -355,25 +327,26 @@ def genere_ft_excel(
     col_CU = "CU"
     col_volume = "Volume"
 
-    # Tableau "Dimensions en mm" : cellules à adapter si besoin
+    # Tableau haut gauche
     ws["I5"] = veh.get(col_Wint)
     ws["I6"] = veh.get(col_Lint)
     ws["I7"] = veh.get(col_Hint)
     ws["I8"] = veh.get(col_Hhors)
 
+    # Tableau haut droit (L, Z, Hc, F, X)
     ws["K4"] = veh.get(col_L)
     ws["K5"] = veh.get(col_Z)
     ws["K6"] = veh.get(col_Hc)
     ws["K7"] = veh.get(col_F)
     ws["K8"] = veh.get(col_X)
 
-    # Tableau PTAC / CU / Volume / Palettes
+    # Tableau bas (PTAC, CU, Volume, Palettes)
     ws["I10"] = veh.get(col_PTAC)
     ws["I11"] = veh.get(col_CU)
     ws["I12"] = veh.get(col_volume)
     ws["I13"] = veh.get(col_pal)
 
-    # --------- Sauvegarde dans un buffer pour téléchargement ---------
+    # ----- Sauvegarde -----
 
     output = BytesIO()
     wb.save(output)
@@ -399,7 +372,7 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# Filtres composants : 1 filtre code produit + 1 filtre code options pour chaque
+# Filtres composants : 1 filtre code produit + 1 filtre code options
 
 df_filtre, cab_prod_choice = filtre_select(df_filtre, "C_Cabine", "Cabine - code produit")
 df_filtre, cab_opt_choice = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
@@ -475,15 +448,6 @@ with col2:
 with col3:
     show_image(img_carbu_path, "Picto carburant")
 
-# ----------------- DETAIL COMPOSANTS (comme dans ton ancien code) -----------------
-
-affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine")
-affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "c_chassis")
-affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "c_caisse")
-affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur")
-affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "c_groupe frigo")
-affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "c_hayon elevateur")
-
 # ----------------- BOUTON DE TÉLÉCHARGEMENT FT -----------------
 
 st.markdown("---")
@@ -508,4 +472,4 @@ if ft_file is not None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 else:
-    st.info("Ajoute le modèle 'FT_Grand_Compte.xlsx' dans le repo pour activer le téléchargement.")
+    st.info("Impossible de générer la fiche technique : modèle manquant ou erreur.")
