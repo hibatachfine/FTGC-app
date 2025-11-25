@@ -75,9 +75,8 @@ def load_data():
 
 
 def filtre_select(df, col, label):
-    """Selectbox dans la sidebar sur une colonne (avec 'Tous')."""
+    """Selectbox simple dans la sidebar sur une colonne (avec 'Tous')."""
     if col not in df.columns:
-        # On ne casse rien si la colonne d'options n'existe pas
         st.sidebar.write(f"(colonne '{col}' absente)")
         return df, None
 
@@ -90,6 +89,38 @@ def filtre_select(df, col, label):
 
     if choix != "Tous":
         df = df[df[col] == choix]
+
+    return df, choix
+
+
+def filtre_select_composant(df, col_prod, col_opt, label):
+    """
+    Selectbox qui propose à la fois les codes PRODUIT et les codes OPTIONS.
+    - col_prod = ex : 'C_Cabine'
+    - col_opt  = ex : 'C_Cabine-OPTIONS'
+    On filtre sur (col_prod == choix) OU (col_opt == choix).
+    """
+    # Si les colonnes n'existent pas, on ne plante pas
+    vals = []
+
+    if col_prod in df.columns:
+        vals += [v for v in df[col_prod].dropna().unique().tolist() if str(v).strip() != ""]
+
+    if col_opt in df.columns:
+        vals += [v for v in df[col_opt].dropna().unique().tolist() if str(v).strip() != ""]
+
+    vals = sorted(set(vals))
+
+    options_display = ["Tous"] + vals
+    choix = st.sidebar.selectbox(label, options_display)
+
+    if choix != "Tous":
+        mask = False
+        if col_prod in df.columns:
+            mask = mask | (df[col_prod] == choix)
+        if col_opt in df.columns:
+            mask = mask | (df[col_opt] == choix)
+        df = df[mask]
 
     return df, choix
 
@@ -350,21 +381,25 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# Filtres codes PRODUIT
-df_filtre, cab_code = filtre_select(df_filtre, "C_Cabine", "Cabine")
-df_filtre, ch_code = filtre_select(df_filtre, "C_Chassis", "Châssis")
-df_filtre, caisse_code = filtre_select(df_filtre, "C_Caisse", "Caisse")
-df_filtre, mot_code = filtre_select(df_filtre, "M_moteur", "Moteur")
-df_filtre, gf_code = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigorifique")
-df_filtre, hay_code = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon élévateur")
-
-# Filtres codes OPTIONS (…-OPTIONS)
-df_filtre, cab_opt_code = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine - options")
-df_filtre, ch_opt_code = filtre_select(df_filtre, "C_Chassis-OPTIONS", "Châssis - options")
-df_filtre, caisse_opt_code = filtre_select(df_filtre, "C_Caisse-OPTIONS", "Caisse - options")
-df_filtre, mot_opt_code = filtre_select(df_filtre, "M_moteur-OPTIONS", "Moteur - options")
-df_filtre, gf_opt_code = filtre_select(df_filtre, "C_Groupe frigo-OPTIONS", "Groupe frigo - options")
-df_filtre, hay_opt_code = filtre_select(df_filtre, "C_Hayon elevateur-OPTIONS", "Hayon - options")
+# Filtres composants = PRODUIT + OPTIONS dans le même select
+df_filtre, cab_choice = filtre_select_composant(
+    df_filtre, "C_Cabine", "C_Cabine-OPTIONS", "Cabine (produit ou option)"
+)
+df_filtre, ch_choice = filtre_select_composant(
+    df_filtre, "C_Chassis", "C_Chassis-OPTIONS", "Châssis (produit ou option)"
+)
+df_filtre, caisse_choice = filtre_select_composant(
+    df_filtre, "C_Caisse", "C_Caisse-OPTIONS", "Caisse (produit ou option)"
+)
+df_filtre, mot_choice = filtre_select_composant(
+    df_filtre, "M_moteur", "M_moteur-OPTIONS", "Moteur (produit ou option)"
+)
+df_filtre, gf_choice = filtre_select_composant(
+    df_filtre, "C_Groupe frigo", "C_Groupe frigo-OPTIONS", "Groupe frigo (produit ou option)"
+)
+df_filtre, hay_choice = filtre_select_composant(
+    df_filtre, "C_Hayon elevateur", "C_Hayon elevateur-OPTIONS", "Hayon (produit ou option)"
+)
 
 st.subheader("Résultats du filtrage")
 st.write(f"{len(df_filtre)} combinaison(s) véhicule trouvée(s).")
