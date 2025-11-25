@@ -5,7 +5,7 @@ from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
-from openpyxl.cell.cell import MergedCell  # <--- important pour détecter les cellules fusionnées
+from openpyxl.cell.cell import MergedCell  # pour détecter les cellules fusionnées
 
 # ----------------- CONFIG APP -----------------
 
@@ -146,8 +146,13 @@ def genere_ft_excel(veh):
 
     def build_lines_from_row(row_series, code_col):
         """
-        Transforme une ligne de la BDD composant en liste de lignes texte "Libellé : valeur",
-        en ignorant le code, les colonnes 'Produit (P) / Option (O)' et les 'zone libre'.
+        Transforme une ligne de la BDD composant en liste de lignes texte (juste la valeur).
+        Exemple : 2 places, Vitres électriques, etc.
+        Ignore :
+          - la colonne de code (C_Cabine, c_chassis, ...)
+          - la colonne Produit (P) / Option (O)
+          - les colonnes 'zone libre'
+          - les colonnes '_'
         """
         if row_series is None:
             return []
@@ -165,7 +170,8 @@ def genere_ft_excel(veh):
                 continue
             if col == "_":
                 continue
-            lines.append(f"{col} : {val}")
+            # 👉 juste la valeur, pas "Libellé : valeur"
+            lines.append(str(val))
         return lines
 
     def fill_lines(ws_local, start_cell, lines, max_rows):
@@ -184,21 +190,18 @@ def genere_ft_excel(veh):
 
         line_idx = 0
         for i in range(max_rows):
-            if line_idx >= len(lines):
-                # on efface les éventuelles anciennes valeurs restantes si la cellule est éditable
-                cell = ws_local.cell(row=start_row + i, column=start_col)
-                if isinstance(cell, MergedCell):
-                    continue
-                cell.value = None
-                continue
-
             cell = ws_local.cell(row=start_row + i, column=start_col)
-            # Si cellule fusionnée : on ne touche pas (sinon AttributeError)
+
+            # cellule fusionnée → on ne touche pas
             if isinstance(cell, MergedCell):
                 continue
 
-            cell.value = lines[line_idx]
-            line_idx += 1
+            if line_idx < len(lines):
+                cell.value = lines[line_idx]
+                line_idx += 1
+            else:
+                # on nettoie les anciennes valeurs éventuelles
+                cell.value = None
 
     def find_component_row(df_ref, ref_code_col, code, prod_or_opt=None):
         """
@@ -314,7 +317,6 @@ def genere_ft_excel(veh):
     cab_opt_row = find_component_row(cabines, "C_Cabine", cab_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B18", build_lines_from_row(cab_row, "C_Cabine"), max_rows=17)
-    # B38–B40 → B39 est fusionnée → sera ignorée
     fill_lines(ws, "B38", build_lines_from_row(cab_opt_row, "C_Cabine"), max_rows=3)
 
     # Moteur
@@ -386,18 +388,28 @@ st.sidebar.header("Filtres véhicule")
 
 df_filtre = vehicules.copy()
 
+# Filtres principaux
 df_filtre, code_pays = filtre_select(df_filtre, "code_pays", "Code pays")
 df_filtre, marque = filtre_select(df_filtre, "Marque", "Marque")
 df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
+# Filtres composants
 df_filtre, cab_code = filtre_select(df_filtre, "C_Cabine", "Cabine")
 df_filtre, ch_code = filtre_select(df_filtre, "C_Chassis", "Châssis")
 df_filtre, caisse_code = filtre_select(df_filtre, "C_Caisse", "Caisse")
 df_filtre, mot_code = filtre_select(df_filtre, "M_moteur", "Moteur")
 df_filtre, gf_code = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigorifique")
 df_filtre, hay_code = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon élévateur")
+
+# Filtres options composants (nouveaux)
+df_filtre, cab_opt_code = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine - options")
+df_filtre, ch_opt_code = filtre_select(df_filtre, "C_Chassis-OPTIONS", "Châssis - options")
+df_filtre, caisse_opt_code = filtre_select(df_filtre, "C_Caisse-OPTIONS", "Caisse - options")
+df_filtre, mot_opt_code = filtre_select(df_filtre, "M_moteur-OPTIONS", "Moteur - options")
+df_filtre, gf_opt_code = filtre_select(df_filtre, "C_Groupe frigo-OPTIONS", "Groupe frigo - options")
+df_filtre, hay_opt_code = filtre_select(df_filtre, "C_Hayon elevateur-OPTIONS", "Hayon - options")
 
 st.subheader("Résultats du filtrage")
 st.write(f"{len(df_filtre)} combinaison(s) véhicule trouvée(s).")
