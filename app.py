@@ -5,7 +5,7 @@ from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
-from openpyxl.cell.cell import MergedCell  # <--- important pour détecter les cellules fusionnées
+from openpyxl.cell.cell import MergedCell  # pour détecter les cellules fusionnées
 
 # ----------------- CONFIG APP -----------------
 
@@ -113,9 +113,11 @@ def genere_ft_excel(veh):
 
     Remplit :
       - en-tête (pays, marque, modèle, PF, etc.)
+      - nom + type de véhicule, code PF dans la bannière
       - images
       - détails CABINE / MOTEUR / CHASSIS / CARROSSERIE / GROUPE FRIGO / HAYON
       - zones OPTIONS associées quand il y a un code -OPTIONS dans la BDD véhicule.
+      - tableau dimensions + masses (W, L, H, Z, Hc, F, X, Volume, Palettes, PTAC, CU…)
     """
 
     template_path = "FT_Grand_Compte.xlsx"   # modèle
@@ -146,8 +148,11 @@ def genere_ft_excel(veh):
 
     def build_lines_from_row(row_series, code_col):
         """
-        Transforme une ligne de la BDD composant en liste de lignes texte "Libellé : valeur",
+        Transforme une ligne de la BDD composant en liste de lignes texte,
         en ignorant le code, les colonnes 'Produit (P) / Option (O)' et les 'zone libre'.
+
+        ⚠️ Version simplifiée : on garde **uniquement la valeur** (sans libellé),
+        pour avoir des puces du type "2 places", "Vitres électriques", etc.
         """
         if row_series is None:
             return []
@@ -165,7 +170,8 @@ def genere_ft_excel(veh):
                 continue
             if col == "_":
                 continue
-            lines.append(f"{col} : {val}")
+            # ➜ on garde seulement la valeur
+            lines.append(str(val))
         return lines
 
     def fill_lines(ws_local, start_cell, lines, max_rows):
@@ -184,17 +190,15 @@ def genere_ft_excel(veh):
 
         line_idx = 0
         for i in range(max_rows):
-            if line_idx >= len(lines):
-                # on efface les éventuelles anciennes valeurs restantes si la cellule est éditable
-                cell = ws_local.cell(row=start_row + i, column=start_col)
-                if isinstance(cell, MergedCell):
-                    continue
-                cell.value = None
+            cell = ws_local.cell(row=start_row + i, column=start_col)
+
+            # cellule fusionnée : on ne touche pas
+            if isinstance(cell, MergedCell):
                 continue
 
-            cell = ws_local.cell(row=start_row + i, column=start_col)
-            # Si cellule fusionnée : on ne touche pas (sinon AttributeError)
-            if isinstance(cell, MergedCell):
+            if line_idx >= len(lines):
+                # on efface les éventuelles anciennes valeurs restantes
+                cell.value = None
                 continue
 
             cell.value = lines[line_idx]
@@ -253,7 +257,7 @@ def genere_ft_excel(veh):
 
         return cand.loc[best_idx]
 
-    # ----------- 1) Remplissage de l’en-tête véhicule -----------
+    # ----------- 1) En-tête véhicule (bloc de gauche) -----------
 
     mapping = {
         "code_pays": "C5",
@@ -269,6 +273,23 @@ def genere_ft_excel(veh):
     for col_bdd, cell_excel in mapping.items():
         if col_bdd in veh.index:
             ws[cell_excel] = veh[col_bdd]
+
+    # ----------- 1bis) Nom et type de véhicule + Code PF (bannière verte) -----------
+
+    # TODO : adapte ces cellules à ton modèle exact
+    nom_type_cell = "D2"   # cellule au milieu de la bannière "NOM ET TYPE DE VEHICULE ..."
+    code_pf_cell_banner = "H2"  # cellule à côté de "CODE PF :"
+
+    marque = str(veh.get("Marque", "") or "")
+    modele = str(veh.get("Modele", "") or "")
+    code_pf_val = veh.get("Code_PF", "")
+
+    nom_type = (marque + " " + modele).strip()
+    if nom_type:
+        ws[nom_type_cell] = nom_type
+
+    if isinstance(code_pf_val, str) or not pd.isna(code_pf_val):
+        ws[code_pf_cell_banner] = code_pf_val
 
     # ----------- 2) Images (véhicule / client / carburant / logo PF) -----------
 
@@ -289,20 +310,46 @@ def genere_ft_excel(veh):
 
     if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
         xl_img_veh = XLImage(img_veh_path)
-        xl_img_veh.anchor = "B15"
+        xl_img_veh.anchor = "B15"  # TODO : adapte si besoin
         ws.add_image(xl_img_veh)
 
     if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
         xl_img_client = XLImage(img_client_path)
-        xl_img_client.anchor = "H2"
+        xl_img_client.anchor = "H2"  # TODO
         ws.add_image(xl_img_client)
 
     if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
         xl_img_carbu = XLImage(img_carbu_path)
-        xl_img_carbu.anchor = "H15"
+        xl_img_carbu.anchor = "H15"  # TODO
         ws.add_image(xl_img_carbu)
 
-    # ----------- 3) Détails des composants + options -----------
+    # ----------- 3) Tableau DIMENSIONS + POIDS -----------
+
+    # ⚠️ Les noms de colonnes ci-dessous doivent correspondre exactement à
+    # ceux de l'onglet FS_referentiel_produits_std_Ver (captures P→Z, AH…).
+    # Adapte-les si nécessaire.
+    dim_mapping = {
+        # BDD                 # cellule FT (à adapter à ton modèle)
+        "Lint utile sur plinthe": "I6",    # W int utile sur plinthe
+        "Lint utile sur plinthe.1": "I7",  # L int utile sur plinthe (si 2 colonnes différentes)
+        "Hint": "I8",                      # H intérieure
+        "H": "I9",                         # H Hors-Tout
+        "L": "J6",                         # L :
+        "Z": "J7",                         # Z :
+        "Hc": "J8",                        # Hc :
+        "F": "J9",                         # F :
+        "X": "J10",                        # X :
+        "palettes 800 x 1200 mm": "I10",   # nombres de palettes
+        "Volume": "I14",                   # Volume (m3) — AH dans ta capture
+        "PTAC": "I12",                     # PTAC
+        "CU": "I13",                       # CU (Kg ±5%)
+    }
+
+    for col_bdd, cell_excel in dim_mapping.items():
+        if col_bdd in veh.index:
+            ws[cell_excel] = veh[col_bdd]
+
+    # ----------- 4) Détails des composants + options -----------
 
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
@@ -367,7 +414,7 @@ def genere_ft_excel(veh):
     fill_lines(ws, "B61", build_lines_from_row(hay_row, "c_hayon elevateur"), max_rows=5)
     fill_lines(ws, "B68", build_lines_from_row(hay_opt_row, "c_hayon elevateur"), max_rows=3)
 
-    # ----------- 4) Sauvegarde dans un buffer pour téléchargement -----------
+    # ----------- 5) Sauvegarde dans un buffer pour téléchargement -----------
 
     output = BytesIO()
     wb.save(output)
