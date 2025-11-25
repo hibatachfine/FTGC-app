@@ -81,7 +81,8 @@ def load_data():
 def filtre_select(df, col, label):
     """Crée un selectbox 'Tous + valeurs uniques' dans la sidebar et renvoie le DF filtré."""
     if col not in df.columns:
-        st.error(f"Colonne manquante dans la base : {col}")
+        # on ne casse pas tout si la colonne n'existe pas
+        st.sidebar.write(f"(colonne '{col}' absente)")
         return df, None
 
     options = sorted(
@@ -111,14 +112,13 @@ def genere_ft_excel(veh):
     Génère une fiche technique Excel à partir du modèle 'FT_Grand_Compte.xlsx'
     et de la ligne véhicule sélectionnée.
 
-    Remplit :
-      - en-tête (pays, marque, modèle, PF, etc.)
-      - images
-      - détails CABINE / MOTEUR / CHASSIS / CARROSSERIE / GROUPE FRIGO / HAYON
-      - zones OPTIONS associées quand il y a un code -OPTIONS dans la BDD véhicule.
+    Pour chaque composant (Cabine, Moteur, Châssis, Caisse, Groupe frigo, Hayon) :
+      - prend la ligne Produit (P) avec le code sans -OPTIONS
+      - prend la ligne Option (O) avec le code ...-OPTIONS
+    Dans la FT, on écrit uniquement les valeurs (2 places, Vitres électriques, etc.).
     """
 
-    template_path = "FT_Grand_Compte.xlsx"   # modèle
+    template_path = "FT_Grand_Compte.xlsx"
 
     if not os.path.exists(template_path):
         st.info(
@@ -127,9 +127,9 @@ def genere_ft_excel(veh):
         )
         return None
 
-    # IMPORTANT : read_only=False pour pouvoir écrire dans les cellules
+    # read_only=False pour pouvoir écrire dans les cellules
     wb = load_workbook(template_path, read_only=False, data_only=False)
-    ws = wb["date"]  # adapter si le nom de l’onglet change
+    ws = wb["date"]  # nom de l’onglet de la FT
 
     # ----------- Fonctions internes pour transformer les BDD composants -----------
 
@@ -147,9 +147,9 @@ def genere_ft_excel(veh):
     def build_lines_from_row(row_series, code_col):
         """
         Transforme une ligne de la BDD composant en liste de lignes texte (juste la valeur).
-        Exemple : 2 places, Vitres électriques, etc.
+        Exemple : 2 places, Vitres électriques, ...
         Ignore :
-          - la colonne de code (C_Cabine, c_chassis, ...)
+          - la colonne de code (C_Cabine, c_chassis, M_moteur, ...)
           - la colonne Produit (P) / Option (O)
           - les colonnes 'zone libre'
           - les colonnes '_'
@@ -170,15 +170,14 @@ def genere_ft_excel(veh):
                 continue
             if col == "_":
                 continue
-            # 👉 juste la valeur, pas "Libellé : valeur"
+            # juste la valeur
             lines.append(str(val))
         return lines
 
     def fill_lines(ws_local, start_cell, lines, max_rows):
         """
         Ecrit chaque ligne de 'lines' à partir de start_cell, sur max_rows lignes max.
-        Le texte est mis dans une seule colonne (celle de start_cell).
-        Ignore les cellules fusionnées (MergedCell) qui ne sont pas éditables.
+        Ignore les cellules fusionnées (MergedCell).
         """
         if not lines:
             return
@@ -200,15 +199,14 @@ def genere_ft_excel(veh):
                 cell.value = lines[line_idx]
                 line_idx += 1
             else:
-                # on nettoie les anciennes valeurs éventuelles
-                cell.value = None
+                cell.value = None  # on nettoie les anciennes valeurs
 
     def find_component_row(df_ref, ref_code_col, code, prod_or_opt=None):
         """
         Récupère la ligne de référence dans la BDD composant correspondant à 'code'.
-        - prod_or_opt : 'P' ou 'O' pour filtrer sur la colonne 'Produit (P) / Option (O)'
+        - prod_or_opt : 'P' ou 'O'
         - stratégie : match exact puis match "code contient / est contenu dans"
-        - si plusieurs lignes possibles : prend celle qui a le plus de champs non vides.
+        - si plusieurs lignes possibles : prend celle avec le plus de champs non vides.
         """
         if not isinstance(code, str) or code.strip() == "" or code != code:
             return None
@@ -256,7 +254,7 @@ def genere_ft_excel(veh):
 
         return cand.loc[best_idx]
 
-    # ----------- 1) Remplissage de l’en-tête véhicule -----------
+    # ----------- 1) En-tête véhicule -----------
 
     mapping = {
         "code_pays": "C5",
@@ -273,7 +271,7 @@ def genere_ft_excel(veh):
         if col_bdd in veh.index:
             ws[cell_excel] = veh[col_bdd]
 
-    # ----------- 2) Images (véhicule / client / carburant / logo PF) -----------
+    # ----------- 2) Images -----------
 
     img_veh_val = veh.get("Image Vehicule")
     img_client_val = veh.get("Image Client")
@@ -283,7 +281,6 @@ def genere_ft_excel(veh):
     img_client_path = resolve_image_path(img_client_val, "Image Client")
     img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
 
-    # Logo PF fixe (optionnel)
     logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
     if os.path.exists(logo_pf_path):
         xl_logo = XLImage(logo_pf_path)
@@ -309,7 +306,7 @@ def genere_ft_excel(veh):
 
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
-    # Cabine
+    # CABINE
     cab_code = veh.get("C_Cabine")
     cab_opt_code = veh.get("C_Cabine-OPTIONS")
 
@@ -319,7 +316,7 @@ def genere_ft_excel(veh):
     fill_lines(ws, "B18", build_lines_from_row(cab_row, "C_Cabine"), max_rows=17)
     fill_lines(ws, "B38", build_lines_from_row(cab_opt_row, "C_Cabine"), max_rows=3)
 
-    # Moteur
+    # MOTEUR
     mot_code = veh.get("M_moteur")
     mot_opt_code = veh.get("M_moteur-OPTIONS")
 
@@ -329,7 +326,7 @@ def genere_ft_excel(veh):
     fill_lines(ws, "F18", build_lines_from_row(mot_row, "M_moteur"), max_rows=17)
     fill_lines(ws, "F38", build_lines_from_row(mot_opt_row, "M_moteur"), max_rows=3)
 
-    # Châssis
+    # CHASSIS
     ch_code = veh.get("C_Chassis")
     ch_opt_code = veh.get("C_Chassis-OPTIONS")
 
@@ -339,7 +336,7 @@ def genere_ft_excel(veh):
     fill_lines(ws, "H18", build_lines_from_row(ch_row, "c_chassis"), max_rows=17)
     fill_lines(ws, "H38", build_lines_from_row(ch_opt_row, "c_chassis"), max_rows=3)
 
-    # Carrosserie (Caisse)
+    # CARROSSERIE (CAISSE)
     caisse_code = veh.get("C_Caisse")
     caisse_opt_code = veh.get("C_Caisse-OPTIONS")
 
@@ -349,7 +346,7 @@ def genere_ft_excel(veh):
     fill_lines(ws, "B40", build_lines_from_row(caisse_row, "c_caisse"), max_rows=5)
     fill_lines(ws, "B47", build_lines_from_row(caisse_opt_row, "c_caisse"), max_rows=2)
 
-    # Groupe frigorifique
+    # GROUPE FRIGORIFIQUE
     gf_code = veh.get("C_Groupe frigo")
     gf_opt_code = veh.get("C_Groupe frigo-OPTIONS")
 
@@ -359,7 +356,7 @@ def genere_ft_excel(veh):
     fill_lines(ws, "B50", build_lines_from_row(gf_row, "c_groupe frigo"), max_rows=6)
     fill_lines(ws, "B58", build_lines_from_row(gf_opt_row, "c_groupe frigo"), max_rows=2)
 
-    # Hayon élévateur
+    # HAYON
     hay_code = veh.get("C_Hayon elevateur")
     hay_opt_code = veh.get("C_Hayon elevateur-OPTIONS")
 
@@ -369,7 +366,7 @@ def genere_ft_excel(veh):
     fill_lines(ws, "B61", build_lines_from_row(hay_row, "c_hayon elevateur"), max_rows=5)
     fill_lines(ws, "B68", build_lines_from_row(hay_opt_row, "c_hayon elevateur"), max_rows=3)
 
-    # ----------- 4) Sauvegarde dans un buffer pour téléchargement -----------
+    # ----------- 4) Sauvegarde -----------
 
     output = BytesIO()
     wb.save(output)
@@ -395,7 +392,7 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# Filtres composants
+# Filtres composants (codes produit)
 df_filtre, cab_code = filtre_select(df_filtre, "C_Cabine", "Cabine")
 df_filtre, ch_code = filtre_select(df_filtre, "C_Chassis", "Châssis")
 df_filtre, caisse_code = filtre_select(df_filtre, "C_Caisse", "Caisse")
@@ -403,7 +400,7 @@ df_filtre, mot_code = filtre_select(df_filtre, "M_moteur", "Moteur")
 df_filtre, gf_code = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigorifique")
 df_filtre, hay_code = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon élévateur")
 
-# Filtres options composants (nouveaux)
+# Filtres options composants (codes ...-OPTIONS)
 df_filtre, cab_opt_code = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine - options")
 df_filtre, ch_opt_code = filtre_select(df_filtre, "C_Chassis-OPTIONS", "Châssis - options")
 df_filtre, caisse_opt_code = filtre_select(df_filtre, "C_Caisse-OPTIONS", "Caisse - options")
