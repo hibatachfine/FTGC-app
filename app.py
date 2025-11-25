@@ -253,7 +253,7 @@ def genere_ft_excel(
     cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine")
     cab_opt_row = find_row(cabines, cab_opt_code, "C_Cabine")
     write_block("B18", build_values(cab_prod_row, "C_Cabine"), max_rows=17)
-    write_block("B38", build_values(cab_opt_row, "C_Cabine"), max_rows=3)
+    write_block("B37", build_values(cab_opt_row, "C_Cabine"), max_rows=3)
 
     # MOTEUR
     mot_prod_code, mot_opt_code = choose_codes(
@@ -264,7 +264,7 @@ def genere_ft_excel(
     mot_prod_row = find_row(moteurs, mot_prod_code, "M_moteur")
     mot_opt_row = find_row(moteurs, mot_opt_code, "M_moteur")
     write_block("F18", build_values(mot_prod_row, "M_moteur"), max_rows=17)
-    write_block("F38", build_values(mot_opt_row, "M_moteur"), max_rows=3)
+    write_block("F37", build_values(mot_opt_row, "M_moteur"), max_rows=3)
 
     # CHASSIS
     ch_prod_code, ch_opt_code = choose_codes(
@@ -275,7 +275,7 @@ def genere_ft_excel(
     ch_prod_row = find_row(chassis, ch_prod_code, "c_chassis")
     ch_opt_row = find_row(chassis, ch_opt_code, "c_chassis")
     write_block("H18", build_values(ch_prod_row, "c_chassis"), max_rows=17)
-    write_block("H38", build_values(ch_opt_row, "c_chassis"), max_rows=3)
+    write_block("H37", build_values(ch_opt_row, "c_chassis"), max_rows=3)
 
     # CAISSE / CARROSSERIE
     caisse_prod_code, caisse_opt_code = choose_codes(
@@ -296,8 +296,8 @@ def genere_ft_excel(
     )
     gf_prod_row = find_row(frigo, gf_prod_code, "c_groupe frigo")
     gf_opt_row = find_row(frigo, gf_opt_code, "c_groupe frigo")
-    write_block("B50", build_values(gf_prod_row, "c_groupe frigo"), max_rows=6)
-    write_block("B58", build_values(gf_opt_row, "c_groupe frigo"), max_rows=2)
+    write_block("B51", build_values(gf_prod_row, "c_groupe frigo"), max_rows=6)
+    write_block("B59", build_values(gf_opt_row, "c_groupe frigo"), max_rows=2)
 
     # HAYON
     hay_prod_code, hay_opt_code = choose_codes(
