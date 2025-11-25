@@ -5,7 +5,7 @@ from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
-from openpyxl.cell.cell import MergedCell  # pour détecter les cellules fusionnées
+from openpyxl.cell.cell import MergedCell
 
 # ----------------- CONFIG APP -----------------
 
@@ -18,27 +18,23 @@ st.set_page_config(
 st.title("Generateur de Fiches Techniques Grand Compte")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 
-IMG_ROOT = "images"  # dossier racine des images dans le repo
+IMG_ROOT = "images"  # dossier racine des images (Image Vehicule / Image Client / Image Carburant)
 
 
 # ----------------- FONCTIONS UTILES -----------------
 
 def resolve_image_path(cell_value, subdir):
-    """
-    Prend la valeur de la cellule Excel (chemin complet, nom de fichier ou URL)
-    et renvoie un chemin utilisable par Streamlit / openpyxl.
-    - subdir = sous-dossier dans 'images' (ex: 'Image Vehicule')
-    """
+    """Transforme la valeur Excel (chemin, nom de fichier ou URL) en chemin exploitable."""
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
 
     val = cell_value.strip()
 
-    # Cas URL -> on renvoie tel quel
-    if val.lower().startswith("http://") or val.lower().startswith("https://"):
+    # URL
+    if val.lower().startswith(("http://", "https://")):
         return val
 
-    # Cas chemin Windows / nom simple -> on garde juste le fichier
+    # Chemin local / nom de fichier
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
 
@@ -79,16 +75,17 @@ def load_data():
 
 
 def filtre_select(df, col, label):
-    """Crée un selectbox 'Tous + valeurs uniques' dans la sidebar et renvoie le DF filtré."""
+    """Selectbox dans la sidebar sur une colonne (avec 'Tous')."""
     if col not in df.columns:
-        # on ne casse pas tout si la colonne n'existe pas
+        # On ne casse rien si la colonne d'options n'existe pas
         st.sidebar.write(f"(colonne '{col}' absente)")
         return df, None
 
-    options = sorted(
-        [v for v in df[col].dropna().unique().tolist() if str(v).strip() != ""]
-    )
-    options_display = ["Tous"] + options
+    vals = df[col].dropna()
+    vals = [v for v in vals.unique().tolist() if str(v).strip() != ""]
+    vals = sorted(vals)
+
+    options_display = ["Tous"] + vals
     choix = st.sidebar.selectbox(label, options_display)
 
     if choix != "Tous":
@@ -105,7 +102,7 @@ def format_vehicule(row):
     return " – ".join(champs)
 
 
-# ----------------- FONCTION DE GENERATION DE LA FT -----------------
+# ----------------- GENERATION DE LA FT -----------------
 
 def genere_ft_excel(veh):
     """
@@ -113,9 +110,9 @@ def genere_ft_excel(veh):
     et de la ligne véhicule sélectionnée.
 
     Pour chaque composant (Cabine, Moteur, Châssis, Caisse, Groupe frigo, Hayon) :
-      - prend la ligne Produit (P) avec le code sans -OPTIONS
-      - prend la ligne Option (O) avec le code ...-OPTIONS
-    Dans la FT, on écrit uniquement les valeurs (2 places, Vitres électriques, etc.).
+      - récupère la ligne PRODUIT (P) dans l'onglet de référence (code sans -OPTIONS)
+      - récupère la ligne OPTION (O) (code ...-OPTIONS)
+    Dans la FT on écrit uniquement les VALEURS (2 places, Vitres électriques…).
     """
 
     template_path = "FT_Grand_Compte.xlsx"
@@ -127,17 +124,13 @@ def genere_ft_excel(veh):
         )
         return None
 
-    # read_only=False pour pouvoir écrire dans les cellules
     wb = load_workbook(template_path, read_only=False, data_only=False)
-    ws = wb["date"]  # nom de l’onglet de la FT
+    ws = wb["date"]  # nom de la feuille dans ton modèle
 
-    # ----------- Fonctions internes pour transformer les BDD composants -----------
+    # ---- helpers internes ----
 
     def get_prodopt_col(df):
-        """
-        Retourne le nom de la colonne 'Produit (P) ... Option (O)' pour un DF donné.
-        Gère les variantes 'Produit (P) / Option (O)' ou 'Produit (P) - Option (O)'.
-        """
+        """Retourne la colonne 'Produit (P) / Option (O)' si elle existe."""
         for c in df.columns:
             name = str(c).lower()
             if "produit (p" in name and "option" in name:
@@ -146,13 +139,12 @@ def genere_ft_excel(veh):
 
     def build_lines_from_row(row_series, code_col):
         """
-        Transforme une ligne de la BDD composant en liste de lignes texte (juste la valeur).
-        Exemple : 2 places, Vitres électriques, ...
+        Transforme une ligne de BDD composant en liste de valeurs (sans libellé).
         Ignore :
-          - la colonne de code (C_Cabine, c_chassis, M_moteur, ...)
+          - la colonne code (C_Cabine, M_moteur, c_chassis, ...)
           - la colonne Produit (P) / Option (O)
-          - les colonnes 'zone libre'
-          - les colonnes '_'
+          - les 'zone libre'
+          - la colonne '_' éventuelle
         """
         if row_series is None:
             return []
@@ -170,20 +162,19 @@ def genere_ft_excel(veh):
                 continue
             if col == "_":
                 continue
-            # juste la valeur
-            lines.append(str(val))
+            lines.append(str(val))  # uniquement la valeur
         return lines
 
     def fill_lines(ws_local, start_cell, lines, max_rows):
         """
-        Ecrit chaque ligne de 'lines' à partir de start_cell, sur max_rows lignes max.
-        Ignore les cellules fusionnées (MergedCell).
+        Ecrit les valeurs dans une seule colonne, à partir de start_cell,
+        sur max_rows lignes max, en ignorant les cellules fusionnées.
         """
         if not lines:
             return
 
-        col_letters = "".join([ch for ch in start_cell if ch.isalpha()])
-        row_digits = "".join([ch for ch in start_cell if ch.isdigit()])
+        col_letters = "".join(ch for ch in start_cell if ch.isalpha())
+        row_digits = "".join(ch for ch in start_cell if ch.isdigit())
         start_col = column_index_from_string(col_letters)
         start_row = int(row_digits)
 
@@ -191,7 +182,7 @@ def genere_ft_excel(veh):
         for i in range(max_rows):
             cell = ws_local.cell(row=start_row + i, column=start_col)
 
-            # cellule fusionnée → on ne touche pas
+            # merged cell → on ne touche pas
             if isinstance(cell, MergedCell):
                 continue
 
@@ -199,62 +190,29 @@ def genere_ft_excel(veh):
                 cell.value = lines[line_idx]
                 line_idx += 1
             else:
-                cell.value = None  # on nettoie les anciennes valeurs
+                cell.value = None  # nettoyage
 
-    def find_component_row(df_ref, ref_code_col, code, prod_or_opt=None):
+    def find_component_row_exact(df_ref, code_col, code, prod_or_opt=None):
         """
-        Récupère la ligne de référence dans la BDD composant correspondant à 'code'.
-        - prod_or_opt : 'P' ou 'O'
-        - stratégie : match exact puis match "code contient / est contenu dans"
-        - si plusieurs lignes possibles : prend celle avec le plus de champs non vides.
+        Cherche STRICTEMENT le code dans la colonne code_col, et optionnellement P/O.
+        Si plusieurs lignes -> on prend la première.
         """
-        if not isinstance(code, str) or code.strip() == "" or code != code:
+        if not isinstance(code, str) or not code or code != code:
             return None
 
-        col = ref_code_col
         df = df_ref
-
         prodopt_col = get_prodopt_col(df)
 
-        # 1) match exact
-        cand = df[df[col] == code]
+        mask = df[code_col] == code
         if prod_or_opt and prodopt_col is not None:
-            cand = cand[cand[prodopt_col] == prod_or_opt]
+            mask &= df[prodopt_col] == prod_or_opt
 
-        # 2) match par sous-chaîne si rien trouvé
-        if cand.empty:
-            s_code = str(code)
-            mask = df[col].astype(str).apply(lambda v: s_code in v or v in s_code)
-            cand = df[mask]
-            if prod_or_opt and prodopt_col is not None:
-                cand = cand[cand[prodopt_col] == prod_or_opt]
-
+        cand = df[mask]
         if cand.empty:
             return None
+        return cand.iloc[0]
 
-        if len(cand) == 1:
-            return cand.iloc[0]
-
-        # 3) plusieurs lignes : on prend celle avec le plus de champs renseignés
-        best_idx = None
-        best_count = -1
-        for idx, row_ in cand.iterrows():
-            count = 0
-            for c, v in row_.items():
-                if c == col:
-                    continue
-                if isinstance(v, str) and v.strip() == "":
-                    continue
-                if pd.isna(v):
-                    continue
-                count += 1
-            if count > best_count:
-                best_count = count
-                best_idx = idx
-
-        return cand.loc[best_idx]
-
-    # ----------- 1) En-tête véhicule -----------
+    # ----------- 1) EN-TÊTE VÉHICULE -----------
 
     mapping = {
         "code_pays": "C5",
@@ -271,7 +229,7 @@ def genere_ft_excel(veh):
         if col_bdd in veh.index:
             ws[cell_excel] = veh[col_bdd]
 
-    # ----------- 2) Images -----------
+    # ----------- 2) IMAGES -----------
 
     img_veh_val = veh.get("Image Vehicule")
     img_client_val = veh.get("Image Client")
@@ -302,7 +260,7 @@ def genere_ft_excel(veh):
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ----------- 3) Détails des composants + options -----------
+    # ----------- 3) DÉTAILS COMPOSANTS + OPTIONS -----------
 
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
@@ -310,8 +268,8 @@ def genere_ft_excel(veh):
     cab_code = veh.get("C_Cabine")
     cab_opt_code = veh.get("C_Cabine-OPTIONS")
 
-    cab_row = find_component_row(cabines, "C_Cabine", cab_code, prod_or_opt="P")
-    cab_opt_row = find_component_row(cabines, "C_Cabine", cab_opt_code, prod_or_opt="O")
+    cab_row = find_component_row_exact(cabines, "C_Cabine", cab_code, prod_or_opt="P")
+    cab_opt_row = find_component_row_exact(cabines, "C_Cabine", cab_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B18", build_lines_from_row(cab_row, "C_Cabine"), max_rows=17)
     fill_lines(ws, "B38", build_lines_from_row(cab_opt_row, "C_Cabine"), max_rows=3)
@@ -320,8 +278,8 @@ def genere_ft_excel(veh):
     mot_code = veh.get("M_moteur")
     mot_opt_code = veh.get("M_moteur-OPTIONS")
 
-    mot_row = find_component_row(moteurs, "M_moteur", mot_code, prod_or_opt="P")
-    mot_opt_row = find_component_row(moteurs, "M_moteur", mot_opt_code, prod_or_opt="O")
+    mot_row = find_component_row_exact(moteurs, "M_moteur", mot_code, prod_or_opt="P")
+    mot_opt_row = find_component_row_exact(moteurs, "M_moteur", mot_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "F18", build_lines_from_row(mot_row, "M_moteur"), max_rows=17)
     fill_lines(ws, "F38", build_lines_from_row(mot_opt_row, "M_moteur"), max_rows=3)
@@ -330,18 +288,18 @@ def genere_ft_excel(veh):
     ch_code = veh.get("C_Chassis")
     ch_opt_code = veh.get("C_Chassis-OPTIONS")
 
-    ch_row = find_component_row(chassis, "c_chassis", ch_code, prod_or_opt="P")
-    ch_opt_row = find_component_row(chassis, "c_chassis", ch_opt_code, prod_or_opt="O")
+    ch_row = find_component_row_exact(chassis, "c_chassis", ch_code, prod_or_opt="P")
+    ch_opt_row = find_component_row_exact(chassis, "c_chassis", ch_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "H18", build_lines_from_row(ch_row, "c_chassis"), max_rows=17)
     fill_lines(ws, "H38", build_lines_from_row(ch_opt_row, "c_chassis"), max_rows=3)
 
-    # CARROSSERIE (CAISSE)
+    # CAISSE (CARROSSERIE)
     caisse_code = veh.get("C_Caisse")
     caisse_opt_code = veh.get("C_Caisse-OPTIONS")
 
-    caisse_row = find_component_row(caisses, "c_caisse", caisse_code, prod_or_opt="P")
-    caisse_opt_row = find_component_row(caisses, "c_caisse", caisse_opt_code, prod_or_opt="O")
+    caisse_row = find_component_row_exact(caisses, "c_caisse", caisse_code, prod_or_opt="P")
+    caisse_opt_row = find_component_row_exact(caisses, "c_caisse", caisse_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B40", build_lines_from_row(caisse_row, "c_caisse"), max_rows=5)
     fill_lines(ws, "B47", build_lines_from_row(caisse_opt_row, "c_caisse"), max_rows=2)
@@ -350,8 +308,8 @@ def genere_ft_excel(veh):
     gf_code = veh.get("C_Groupe frigo")
     gf_opt_code = veh.get("C_Groupe frigo-OPTIONS")
 
-    gf_row = find_component_row(frigo, "c_groupe frigo", gf_code, prod_or_opt="P")
-    gf_opt_row = find_component_row(frigo, "c_groupe frigo", gf_opt_code, prod_or_opt="O")
+    gf_row = find_component_row_exact(frigo, "c_groupe frigo", gf_code, prod_or_opt="P")
+    gf_opt_row = find_component_row_exact(frigo, "c_groupe frigo", gf_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B50", build_lines_from_row(gf_row, "c_groupe frigo"), max_rows=6)
     fill_lines(ws, "B58", build_lines_from_row(gf_opt_row, "c_groupe frigo"), max_rows=2)
@@ -360,13 +318,13 @@ def genere_ft_excel(veh):
     hay_code = veh.get("C_Hayon elevateur")
     hay_opt_code = veh.get("C_Hayon elevateur-OPTIONS")
 
-    hay_row = find_component_row(hayons, "c_hayon elevateur", hay_code, prod_or_opt="P")
-    hay_opt_row = find_component_row(hayons, "c_hayon elevateur", hay_opt_code, prod_or_opt="O")
+    hay_row = find_component_row_exact(hayons, "c_hayon elevateur", hay_code, prod_or_opt="P")
+    hay_opt_row = find_component_row_exact(hayons, "c_hayon elevateur", hay_opt_code, prod_or_opt="O")
 
     fill_lines(ws, "B61", build_lines_from_row(hay_row, "c_hayon elevateur"), max_rows=5)
     fill_lines(ws, "B68", build_lines_from_row(hay_opt_row, "c_hayon elevateur"), max_rows=3)
 
-    # ----------- 4) Sauvegarde -----------
+    # ----------- 4) SAUVEGARDE -----------
 
     output = BytesIO()
     wb.save(output)
@@ -392,7 +350,7 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# Filtres composants (codes produit)
+# Filtres codes PRODUIT
 df_filtre, cab_code = filtre_select(df_filtre, "C_Cabine", "Cabine")
 df_filtre, ch_code = filtre_select(df_filtre, "C_Chassis", "Châssis")
 df_filtre, caisse_code = filtre_select(df_filtre, "C_Caisse", "Caisse")
@@ -400,7 +358,7 @@ df_filtre, mot_code = filtre_select(df_filtre, "M_moteur", "Moteur")
 df_filtre, gf_code = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigorifique")
 df_filtre, hay_code = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon élévateur")
 
-# Filtres options composants (codes ...-OPTIONS)
+# Filtres codes OPTIONS (…-OPTIONS)
 df_filtre, cab_opt_code = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine - options")
 df_filtre, ch_opt_code = filtre_select(df_filtre, "C_Chassis-OPTIONS", "Châssis - options")
 df_filtre, caisse_opt_code = filtre_select(df_filtre, "C_Caisse-OPTIONS", "Caisse - options")
