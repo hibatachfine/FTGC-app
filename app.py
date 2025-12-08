@@ -238,14 +238,14 @@ def genere_ft_excel(
         ws.add_image(img_obj)
 
     # Positions des images dans le modèle Excel
-    VEH_ANCHOR = "D15"     # véhicule centré
-    CLIENT_ANCHOR = "J5"   # logo client
-    CARBU_ANCHOR = "J12"   # picto carburant
+    VEH_ANCHOR = "B7"     # véhicule centré
+    CLIENT_ANCHOR = "F8"   # logo client
+    CARBU_ANCHOR = "F12"   # picto carburant
 
     # Dimensions maximales
-    VEH_MAX_W, VEH_MAX_H = 900, 350
-    LOGO_MAX_W, LOGO_MAX_H = 250, 150
-    CARBU_MAX_W, CARBU_MAX_H = 180, 120
+    VEH_MAX_W, VEH_MAX_H = 1000, 450
+    LOGO_MAX_W, LOGO_MAX_H = 450, 250
+    CARBU_MAX_W, CARBU_MAX_H = 280, 220
 
     # Résolution des chemins
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
