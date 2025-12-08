@@ -26,6 +26,7 @@ IMG_ROOT = "images"  # dossier racine des images
 def resolve_image_path(cell_value, subdir):
     """
     Transforme la valeur Excel (chemin, nom de fichier ou URL) en chemin exploitable.
+    subdir = sous-dossier dans 'images' (ex: 'vehicules', 'clients', 'carburant')
     """
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
@@ -113,11 +114,17 @@ def genere_ft_excel(
     caisse_prod_choice, caisse_opt_choice,
     gf_prod_choice, gf_opt_choice,
     hay_prod_choice, hay_opt_choice,
+    img_veh_upload=None,
+    img_client_upload=None,
+    img_carbu_upload=None,
 ):
     """
     Génère une fiche technique Excel à partir du modèle 'FT_Grand_Compte.xlsx'
     en utilisant la ligne véhicule sélectionnée et les filtres
     (code produit + code options) pour chaque composant.
+
+    Si des images sont uploadées (vehicule / client / carburant),
+    elles remplacent celles de la BDD pour cette FT.
     """
 
     template_path = "FT_Grand_Compte.xlsx"
@@ -209,33 +216,46 @@ def genere_ft_excel(
         if col_bdd in veh.index:
             ws[cell_addr] = veh[col_bdd]
 
-    # ----- 2) IMAGES (véhicule, client, carburant, logo PF) -----
+    # ----- 2) IMAGES (véhicule, client, carburant) -----
 
     img_veh_val = veh.get("Image Vehicule")
     img_client_val = veh.get("Image Client")
     img_carbu_val = veh.get("Image Carburant")
 
-    img_veh_path = resolve_image_path(img_veh_val, "Image Vehicule")
-    img_client_path = resolve_image_path(img_client_val, "Image Client")
-    img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
+    # chemins à partir de la BDD (dans tes sous-dossiers réels)
+    img_veh_path = resolve_image_path(img_veh_val, "vehicules")
+    img_client_path = resolve_image_path(img_client_val, "clients")
+    img_carbu_path = resolve_image_path(img_carbu_val, "carburant")
 
-    logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
-    if os.path.exists(logo_pf_path):
-        xl_logo = XLImage(logo_pf_path)
-        xl_logo.anchor = "B2"
-        ws.add_image(xl_logo)
-
-    if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
+    # Image véhicule
+    if img_veh_upload is not None:
+        data = img_veh_upload.read()
+        veh_img = XLImage(BytesIO(data))
+        veh_img.anchor = "B15"
+        ws.add_image(veh_img)
+    elif img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
         xl_img_veh = XLImage(img_veh_path)
         xl_img_veh.anchor = "B15"
         ws.add_image(xl_img_veh)
 
-    if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
+    # Image client
+    if img_client_upload is not None:
+        data = img_client_upload.read()
+        client_img = XLImage(BytesIO(data))
+        client_img.anchor = "H2"
+        ws.add_image(client_img)
+    elif img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
         xl_img_client = XLImage(img_client_path)
         xl_img_client.anchor = "H2"
         ws.add_image(xl_img_client)
 
-    if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
+    # Picto carburant
+    if img_carbu_upload is not None:
+        data = img_carbu_upload.read()
+        carbu_img = XLImage(BytesIO(data))
+        carbu_img.anchor = "H15"
+        ws.add_image(carbu_img)
+    elif img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
         xl_img_carbu = XLImage(img_carbu_path)
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
@@ -310,8 +330,7 @@ def genere_ft_excel(
     write_block("B61", build_values(hay_prod_row, "c_hayon elevateur"), max_rows=5)
     write_block("B68", build_values(hay_opt_row, "c_hayon elevateur"), max_rows=3)
 
-    # ----- 4) DIMENSIONS -----
-    # (on garde ce qui marchait : tu m'as dit "ok pour les tableaux")
+    # ----- 4) DIMENSIONS & POIDS -----
 
     col_Wint = "W int\n utile \nsur plinthe"
     col_Lint = "L int \nutile \nsur plinthe"
@@ -426,27 +445,40 @@ cols_synthese = [
 cols_existantes = [c for c in cols_synthese if c in veh.index]
 st.table(veh[cols_existantes].to_frame(name="Valeur"))
 
-# ----------------- APERÇU IMAGES -----------------
+# ----------------- APERÇU / UPLOAD IMAGES -----------------
 
 img_veh_val = veh.get("Image Vehicule")
 img_client_val = veh.get("Image Client")
 img_carbu_val = veh.get("Image Carburant")
 
-img_veh_path = resolve_image_path(img_veh_val, "Image Vehicule")
-img_client_path = resolve_image_path(img_client_val, "Image Client")
-img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
+img_veh_path = resolve_image_path(img_veh_val, "vehicules")
+img_client_path = resolve_image_path(img_client_val, "clients")
+img_carbu_path = resolve_image_path(img_carbu_val, "carburant")
 
 st.subheader("Images associées")
+
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    show_image(img_veh_path, "Image véhicule")
+    st.write("Image véhicule (BDD)")
+    show_image(img_veh_path, "")
+    uploaded_veh = st.file_uploader(
+        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="veh_upload"
+    )
 
 with col2:
-    show_image(img_client_path, "Image client")
+    st.write("Logo client (BDD)")
+    show_image(img_client_path, "")
+    uploaded_client = st.file_uploader(
+        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="client_upload"
+    )
 
 with col3:
-    show_image(img_carbu_path, "Picto carburant")
+    st.write("Picto carburant (BDD)")
+    show_image(img_carbu_path, "")
+    uploaded_carbu = st.file_uploader(
+        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="carbu_upload"
+    )
 
 # ----------------- BOUTON DE TÉLÉCHARGEMENT FT -----------------
 
@@ -461,6 +493,9 @@ ft_file = genere_ft_excel(
     caisse_prod_choice, caisse_opt_choice,
     gf_prod_choice, gf_opt_choice,
     hay_prod_choice, hay_opt_choice,
+    uploaded_veh,
+    uploaded_client,
+    uploaded_carbu,
 )
 
 if ft_file is not None:
