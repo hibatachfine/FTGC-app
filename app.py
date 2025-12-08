@@ -254,6 +254,8 @@ def genere_ft_excel(
 
     # ---------- 1bis) Lignes 1 et 2 : titre + Code PF ----------
 
+        # ---------- 1bis) Lignes 1 et 2 : titre + Code PF ----------
+
     # Combinaison véhicule (comme dans le select)
     veh_parts = []
     for key in ["code_pays", "Marque", "Modele", "Code_PF", "Standard_PF"]:
@@ -271,9 +273,11 @@ def genere_ft_excel(
     titre_ligne1 = f"{comb_veh} - {type_caisse}"
     code_pf_val = str(veh.get("Code_PF", "") or "")
 
-    # Remplacement dans la feuille (texte existant dans les cellules fusionnées)
-    set_row_text(1, "NOM et TYPE DE Véhicule", titre_ligne1)
-    set_row_text(2, "CODE PF", code_pf_val)
+    # On écrit directement dans les cellules en haut de la feuille
+    # (B1 et B2 sont la 1re cellule des zones fusionnées du bandeau vert)
+    ws["B1"] = titre_ligne1
+    ws["B2"] = f"CODE PF : {code_pf_val}"
+
 
     # ---------- 2) Images (véhicule, client, carburant) ----------
 
