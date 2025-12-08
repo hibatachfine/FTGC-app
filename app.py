@@ -238,9 +238,9 @@ def genere_ft_excel(
         ws.add_image(img_obj)
 
     # Ancrages dans ta FT (à adapter si besoin)
-    VEH_ANCHOR = "B15"   # grand dessin véhicule au centre gauche
-    CLIENT_ANCHOR = "K6" # logo client, en haut à droite
-    CARBU_ANCHOR = "K13" # picto carburant, en dessous du logo client
+    VEH_ANCHOR = "B7"   # grand dessin véhicule au centre gauche
+    CLIENT_ANCHOR = "F8" # logo client, en haut à droite
+    CARBU_ANCHOR = "F13" # picto carburant, en dessous du logo client
 
     # Tailles max (en pixels) pour chaque type d'image
     VEH_MAX_W, VEH_MAX_H = 600, 220
