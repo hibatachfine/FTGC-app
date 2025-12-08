@@ -200,6 +200,64 @@ def genere_ft_excel(
 
         return prod_code, opt_code
 
+        mapping_header = {
+        "code_pays": "C5",
+        "Marque": "C6",
+        "Modele": "C7",
+        "Code_PF": "C8",
+        "Standard_PF": "C9",
+        "catalogue_1\n PF": "C10",
+        "catalogue_2\nST": "C11",
+        "catalogue_3\n LIBRE": "C12",
+    }
+    for col_bdd, cell_addr in mapping_header.items():
+        if col_bdd in veh.index:
+            ws[cell_addr] = veh[col_bdd]
+    # ----- 1bis) Lignes 1 et 2 : titre véhicule + type de caisse, Code PF -----
+
+    def set_row_text(row_idx, search_substring, new_text):
+        """
+        Cherche dans la ligne row_idx la cellule qui contient search_substring
+        et remplace son contenu par new_text.
+        (utile pour les cellules fusionnées dont on ne connaît pas la coordonnée exacte)
+        """
+        for cell in ws[row_idx]:
+            # on ne modifie pas les MergedCell non éditables
+            if isinstance(cell, MergedCell):
+                continue
+            val = cell.value
+            if isinstance(val, str) and search_substring.lower() in val.lower():
+                cell.value = new_text
+                break
+
+    # 1) Construire la "combinaison véhicule" (comme dans le select)
+    veh_parts = []
+    for key in ["code_pays", "Marque", "Modele", "Code_PF", "Standard_PF"]:
+        if key in veh.index and pd.notna(veh[key]):
+            veh_parts.append(str(veh[key]))
+    comb_veh = " - ".join(veh_parts)
+
+    # 2) Déterminer le type de caisse (frigo vs sèche)
+    gf_val = veh.get("C_Groupe frigo")
+    if isinstance(gf_val, str) and gf_val.strip() and gf_val.strip().upper() != "GF_VIDE":
+        type_caisse = "CAISSE FRIGORIFIQUE"
+    else:
+        type_caisse = "CAISSE SECHE"
+
+    # Texte final ligne 1
+    titre_ligne1 = f"{comb_veh} - {type_caisse}"
+
+    # 3) Ligne 2 : Code PF au centre
+    code_pf_val = str(veh.get("Code_PF", "") or "")
+    titre_ligne2 = code_pf_val
+
+    # Remplacement dans la feuille :
+    # - ligne 1 : on remplace la cellule qui contenait "NOM et TYPE DE Véhicule"
+    # - ligne 2 : on remplace celle qui contenait "CODE PF"
+    set_row_text(1, "NOM et TYPE DE Véhicule", titre_ligne1)
+    set_row_text(2, "CODE PF", titre_ligne2)
+
+
     # ----- 1) EN-TÊTE GÉNÉRALE (pays, marque, modèle, PF, etc.) -----
 
     mapping_header = {
