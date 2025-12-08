@@ -645,10 +645,9 @@ ft_file = genere_ft_excel(
     caisse_prod_choice, caisse_opt_choice,
     gf_prod_choice, gf_opt_choice,
     hay_prod_choice, hay_opt_choice,
-    uploaded_veh,
-    uploaded_client,
-    uploaded_carbu,
+    uploaded_veh, uploaded_client, uploaded_carbu,
 )
+
 
 if ft_file is not None:
     nom_fichier = f"FT_{veh.get('Code_PF', 'PF')}_{veh.get('Modele', 'MODELE')}.xlsx"
