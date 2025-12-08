@@ -243,9 +243,9 @@ def genere_ft_excel(
     CARBU_ANCHOR = "F12"   # picto carburant
 
     # Dimensions maximales
-    VEH_MAX_W, VEH_MAX_H = 1000, 450
-    LOGO_MAX_W, LOGO_MAX_H = 450, 250
-    CARBU_MAX_W, CARBU_MAX_H = 280, 220
+    VEH_MAX_W, VEH_MAX_H = 950, 350
+    LOGO_MAX_W, LOGO_MAX_H = 550, 350
+    CARBU_MAX_W, CARBU_MAX_H = 550, 350
 
     # Résolution des chemins
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
