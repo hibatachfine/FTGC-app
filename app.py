@@ -278,14 +278,14 @@ def genere_ft_excel(
     # ---------- 2) Images (véhicule, client, carburant) ----------
 
     # Positions dans le modèle (à ajuster si besoin)
-    VEH_ANCHOR = "C9"     # véhicule au centre
-    CLIENT_ANCHOR = "I6"  # logo client
-    CARBU_ANCHOR = "I13"  # picto carburant
+    VEH_ANCHOR = "B7"     # véhicule au centre
+    CLIENT_ANCHOR = "F8"  # logo client
+    CARBU_ANCHOR = "F11"  # picto carburant
 
     # Tailles max
-    VEH_MAX_W, VEH_MAX_H = 600, 320
-    LOGO_MAX_W, LOGO_MAX_H = 220, 140
-    CARBU_MAX_W, CARBU_MAX_H = 160, 120
+    VEH_MAX_W, VEH_MAX_H = 800, 520
+    LOGO_MAX_W, LOGO_MAX_H = 320, 240
+    CARBU_MAX_W, CARBU_MAX_H = 260, 220
 
     # Chemins issus de la BDD si pas d’upload
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
