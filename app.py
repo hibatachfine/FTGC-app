@@ -135,7 +135,6 @@ def genere_ft_excel(
       - éventuellement des images uploadées (véhicule / client / carburant)
     """
 
-    # on déclare ici pour pouvoir utiliser les DataFrames globaux
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
     template_path = "FT_Grand_Compte.xlsx"
@@ -236,6 +235,37 @@ def genere_ft_excel(
         img_obj.anchor = anchor
         ws.add_image(img_obj)
 
+    def set_merged_value(ws_local, cell_ref, value):
+        """
+        Écrit `value` dans cell_ref.
+        Si cell_ref est une MergedCell, on écrit dans la cellule
+        en haut à gauche de la plage fusionnée correspondante.
+        """
+        cell = ws_local[cell_ref]
+
+        # Si ce n'est pas une cellule fusionnée -> écriture directe
+        if not isinstance(cell, MergedCell):
+            cell.value = value
+            return
+
+        # Sinon on retrouve la plage fusionnée contenant la cellule
+        col_letters = "".join(ch for ch in cell_ref if ch.isalpha())
+        row_digits = "".join(ch for ch in cell_ref if ch.isdigit())
+        col_idx = column_index_from_string(col_letters)
+        row_idx = int(row_digits)
+
+        for merged_range in ws_local.merged_cells.ranges:
+            if (
+                merged_range.min_row <= row_idx <= merged_range.max_row
+                and merged_range.min_col <= col_idx <= merged_range.max_col
+            ):
+                top_left = ws_local.cell(row=merged_range.min_row, column=merged_range.min_col)
+                top_left.value = value
+                return
+
+        # Si aucune plage fusionnée ne correspond (cas rare)
+        cell.value = value
+
     # ---------- 1) En-tête "classique" (colonnes C5..C12) ----------
 
     mapping_header = {
@@ -254,8 +284,6 @@ def genere_ft_excel(
 
     # ---------- 1bis) Lignes 1 et 2 : titre + Code PF ----------
 
-        # ---------- 1bis) Lignes 1 et 2 : titre + Code PF ----------
-
     # Combinaison véhicule (comme dans le select)
     veh_parts = []
     for key in ["code_pays", "Marque", "Modele", "Code_PF", "Standard_PF"]:
@@ -273,11 +301,10 @@ def genere_ft_excel(
     titre_ligne1 = f"{comb_veh} - {type_caisse}"
     code_pf_val = str(veh.get("Code_PF", "") or "")
 
-    # On écrit directement dans les cellules en haut de la feuille
-    # (B1 et B2 sont la 1re cellule des zones fusionnées du bandeau vert)
-    ws["B1"] = titre_ligne1
-    ws["B2"] = f"CODE PF : {code_pf_val}"
-
+    # On écrit dans le bandeau vert (zone fusionnée centrée sur la ligne)
+    # Ici on vise C1 et C2, qui appartiennent au bandeau vert
+    set_merged_value(ws, "C1", titre_ligne1)
+    set_merged_value(ws, "C2", f"CODE PF : {code_pf_val}")
 
     # ---------- 2) Images (véhicule, client, carburant) ----------
 
