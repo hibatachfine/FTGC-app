@@ -18,15 +18,16 @@ st.set_page_config(
 st.title("Generateur de Fiches Techniques Grand Compte")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 
-IMG_ROOT = "images"  # dossier racine des images
+IMG_ROOT = "images"  # dossier racine des images (dans le repo)
 
 
 # ----------------- FONCTIONS UTILES -----------------
 
 def resolve_image_path(cell_value, subdir):
     """
-    Transforme la valeur Excel (chemin, nom de fichier ou URL) en chemin exploitable.
-    subdir = sous-dossier dans 'images' (ex: 'vehicules', 'clients', 'carburant')
+    Transforme la valeur Excel (chemin complet, nom de fichier ou URL)
+    en chemin exploitable.
+    - subdir : sous-dossier dans IMG_ROOT (ex : 'vehicules', 'clients', 'carburant')
     """
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
@@ -42,9 +43,17 @@ def resolve_image_path(cell_value, subdir):
     return os.path.join(IMG_ROOT, subdir, filename)
 
 
-def show_image(path_or_url, caption):
-    """Affiche une image si possible, sinon un message explicite."""
+def show_image(path_or_url, caption, uploaded_file=None):
+    """
+    Affiche une image :
+      - si uploaded_file est fourni -> on affiche l'upload
+      - sinon on affiche path_or_url (URL ou chemin local)
+    """
     st.caption(caption)
+
+    if uploaded_file is not None:
+        st.image(uploaded_file)
+        return
 
     if not path_or_url:
         st.info("Pas d'image définie")
@@ -104,6 +113,8 @@ def format_vehicule(row):
     return " – ".join(champs)
 
 
+# ----------------- GENERATION DE LA FT -----------------
+
 def genere_ft_excel(
     veh,
     cab_prod_choice, cab_opt_choice,
@@ -123,6 +134,9 @@ def genere_ft_excel(
       - les choix de codes produit / options pour chaque composant
       - éventuellement des images uploadées (véhicule / client / carburant)
     """
+
+    # on déclare ici pour pouvoir utiliser les DataFrames globaux
+    global cabines, moteurs, chassis, caisses, frigo, hayons
 
     template_path = "FT_Grand_Compte.xlsx"
     if not os.path.exists(template_path):
@@ -257,21 +271,21 @@ def genere_ft_excel(
     titre_ligne1 = f"{comb_veh} - {type_caisse}"
     code_pf_val = str(veh.get("Code_PF", "") or "")
 
-    # Remplacement dans la feuille
+    # Remplacement dans la feuille (texte existant dans les cellules fusionnées)
     set_row_text(1, "NOM et TYPE DE Véhicule", titre_ligne1)
     set_row_text(2, "CODE PF", code_pf_val)
 
     # ---------- 2) Images (véhicule, client, carburant) ----------
 
-    # Positions dans le modèle
-    VEH_ANCHOR = "E9"     # véhicule au centre
-    CLIENT_ANCHOR = "J5"  # logo client
-    CARBU_ANCHOR = "J12"  # picto carburant
+    # Positions dans le modèle (à ajuster si besoin)
+    VEH_ANCHOR = "C9"     # véhicule au centre
+    CLIENT_ANCHOR = "I6"  # logo client
+    CARBU_ANCHOR = "I13"  # picto carburant
 
     # Tailles max
-    VEH_MAX_W, VEH_MAX_H = 900, 350
-    LOGO_MAX_W, LOGO_MAX_H = 250, 150
-    CARBU_MAX_W, CARBU_MAX_H = 180, 120
+    VEH_MAX_W, VEH_MAX_H = 600, 320
+    LOGO_MAX_W, LOGO_MAX_H = 220, 140
+    CARBU_MAX_W, CARBU_MAX_H = 160, 120
 
     # Chemins issus de la BDD si pas d’upload
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
@@ -303,8 +317,6 @@ def genere_ft_excel(
         place_image(XLImage(img_carbu_path), CARBU_ANCHOR, CARBU_MAX_W, CARBU_MAX_H)
 
     # ---------- 3) Composants & options ----------
-
-    global cabines, moteurs, chassis, caisses, frigo, hayons
 
     # CABINE
     cab_prod_code, cab_opt_code = choose_codes(
@@ -412,119 +424,6 @@ def genere_ft_excel(
     return output
 
 
-    # ----- 3) COMPOSANTS & OPTIONS -----
-
-    global cabines, moteurs, chassis, caisses, frigo, hayons
-
-    # CABINE
-    cab_prod_code, cab_opt_code = choose_codes(
-        cab_prod_choice, cab_opt_choice,
-        veh.get("C_Cabine"),
-        veh.get("C_Cabine-OPTIONS"),
-    )
-    cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine")
-    cab_opt_row = find_row(cabines, cab_opt_code, "C_Cabine")
-    write_block("B18", build_values(cab_prod_row, "C_Cabine"), max_rows=17)
-    write_block("B37", build_values(cab_opt_row, "C_Cabine"), max_rows=3)
-
-    # MOTEUR
-    mot_prod_code, mot_opt_code = choose_codes(
-        mot_prod_choice, mot_opt_choice,
-        veh.get("M_moteur"),
-        veh.get("M_moteur-OPTIONS"),
-    )
-    mot_prod_row = find_row(moteurs, mot_prod_code, "M_moteur")
-    mot_opt_row = find_row(moteurs, mot_opt_code, "M_moteur")
-    write_block("F18", build_values(mot_prod_row, "M_moteur"), max_rows=17)
-    write_block("F37", build_values(mot_opt_row, "M_moteur"), max_rows=3)
-
-    # CHASSIS
-    ch_prod_code, ch_opt_code = choose_codes(
-        ch_prod_choice, ch_opt_choice,
-        veh.get("C_Chassis"),
-        veh.get("C_Chassis-OPTIONS"),
-    )
-    ch_prod_row = find_row(chassis, ch_prod_code, "c_chassis")
-    ch_opt_row = find_row(chassis, ch_opt_code, "c_chassis")
-    write_block("H18", build_values(ch_prod_row, "c_chassis"), max_rows=17)
-    write_block("H37", build_values(ch_opt_row, "c_chassis"), max_rows=3)
-
-    # CAISSE / CARROSSERIE
-    caisse_prod_code, caisse_opt_code = choose_codes(
-        caisse_prod_choice, caisse_opt_choice,
-        veh.get("C_Caisse"),
-        veh.get("C_Caisse-OPTIONS"),
-    )
-    caisse_prod_row = find_row(caisses, caisse_prod_code, "c_caisse")
-    caisse_opt_row = find_row(caisses, caisse_opt_code, "c_caisse")
-    write_block("B40", build_values(caisse_prod_row, "c_caisse"), max_rows=5)
-    write_block("B47", build_values(caisse_opt_row, "c_caisse"), max_rows=2)
-
-    # GROUPE FRIGO
-    gf_prod_code, gf_opt_code = choose_codes(
-        gf_prod_choice, gf_opt_choice,
-        veh.get("C_Groupe frigo"),
-        veh.get("C_Groupe frigo-OPTIONS"),
-    )
-    gf_prod_row = find_row(frigo, gf_prod_code, "c_groupe frigo")
-    gf_opt_row = find_row(frigo, gf_opt_code, "c_groupe frigo")
-    write_block("B51", build_values(gf_prod_row, "c_groupe frigo"), max_rows=6)
-    write_block("B59", build_values(gf_opt_row, "c_groupe frigo"), max_rows=2)
-
-    # HAYON
-    hay_prod_code, hay_opt_code = choose_codes(
-        hay_prod_choice, hay_opt_choice,
-        veh.get("C_Hayon elevateur"),
-        veh.get("C_Hayon elevateur-OPTIONS"),
-    )
-    hay_prod_row = find_row(hayons, hay_prod_code, "c_hayon elevateur")
-    hay_opt_row = find_row(hayons, hay_opt_code, "c_hayon elevateur")
-    write_block("B61", build_values(hay_prod_row, "c_hayon elevateur"), max_rows=5)
-    write_block("B68", build_values(hay_opt_row, "c_hayon elevateur"), max_rows=3)
-
-    # ----- 4) DIMENSIONS & POIDS -----
-
-    col_Wint = "W int\n utile \nsur plinthe"
-    col_Lint = "L int \nutile \nsur plinthe"
-    col_Hint = "H int"
-    col_Hhors = "H"
-    col_L = "L"
-    col_Z = "Z"
-    col_Hc = "Hc"
-    col_F = "F"
-    col_X = "X"
-    col_pal = "palettes 800 x 1200 mm"
-    col_PTAC = "PTAC"
-    col_CU = "CU"
-    col_volume = "Volume"
-
-    # Tableau haut gauche
-    ws["I5"] = veh.get(col_Wint)
-    ws["I6"] = veh.get(col_Lint)
-    ws["I7"] = veh.get(col_Hint)
-    ws["I8"] = veh.get(col_Hhors)
-
-    # Tableau haut droit (L, Z, Hc, F, X)
-    ws["K4"] = veh.get(col_L)
-    ws["K5"] = veh.get(col_Z)
-    ws["K6"] = veh.get(col_Hc)
-    ws["K7"] = veh.get(col_F)
-    ws["K8"] = veh.get(col_X)
-
-    # Tableau bas (PTAC, CU, Volume, Palettes)
-    ws["I10"] = veh.get(col_PTAC)
-    ws["I11"] = veh.get(col_CU)
-    ws["I12"] = veh.get(col_volume)
-    ws["I13"] = veh.get(col_pal)
-
-    # ----- Sauvegarde -----
-
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output
-
-
 # ----------------- CHARGEMENT DES DONNÉES -----------------
 
 vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
@@ -597,7 +496,11 @@ cols_synthese = [
 cols_existantes = [c for c in cols_synthese if c in veh.index]
 st.table(veh[cols_existantes].to_frame(name="Valeur"))
 
-# ----------------- APERÇU / UPLOAD IMAGES -----------------
+# ----------------- APERÇU + UPLOAD IMAGES -----------------
+
+st.subheader("Images associées")
+
+col1, col2, col3 = st.columns(3)
 
 img_veh_val = veh.get("Image Vehicule")
 img_client_val = veh.get("Image Client")
@@ -607,30 +510,26 @@ img_veh_path = resolve_image_path(img_veh_val, "vehicules")
 img_client_path = resolve_image_path(img_client_val, "clients")
 img_carbu_path = resolve_image_path(img_carbu_val, "carburant")
 
-st.subheader("Images associées")
-
-col1, col2, col3 = st.columns(3)
-
 with col1:
     st.write("Image véhicule (BDD)")
-    show_image(img_veh_path, "")
     uploaded_veh = st.file_uploader(
-        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="veh_upload"
+        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="upl_veh"
     )
+    show_image(img_veh_path, "Aperçu véhicule", uploaded_file=uploaded_veh)
 
 with col2:
     st.write("Logo client (BDD)")
-    show_image(img_client_path, "")
     uploaded_client = st.file_uploader(
-        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="client_upload"
+        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="upl_client"
     )
+    show_image(img_client_path, "Aperçu client", uploaded_file=uploaded_client)
 
 with col3:
     st.write("Picto carburant (BDD)")
-    show_image(img_carbu_path, "")
     uploaded_carbu = st.file_uploader(
-        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="carbu_upload"
+        "Remplacer (optionnel)", type=["png", "jpg", "jpeg"], key="upl_carbu"
     )
+    show_image(img_carbu_path, "Aperçu carburant", uploaded_file=uploaded_carbu)
 
 # ----------------- BOUTON DE TÉLÉCHARGEMENT FT -----------------
 
@@ -647,7 +546,6 @@ ft_file = genere_ft_excel(
     hay_prod_choice, hay_opt_choice,
     uploaded_veh, uploaded_client, uploaded_carbu,
 )
-
 
 if ft_file is not None:
     nom_fichier = f"FT_{veh.get('Code_PF', 'PF')}_{veh.get('Modele', 'MODELE')}.xlsx"
