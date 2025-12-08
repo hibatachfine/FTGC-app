@@ -216,54 +216,63 @@ def genere_ft_excel(
         if col_bdd in veh.index:
             ws[cell_addr] = veh[col_bdd]
 
-       # ----- 2) IMAGES (véhicule, client, carburant) -----
+           # ----- 2) IMAGES (véhicule, client, carburant) -----
 
-def place_image(img_obj, anchor, max_w=None, max_h=None):
-    # Redimensionne proprement
-    if img_obj is None:
-        return
-    w, h = img_obj.width, img_obj.height
-    ratio = 1.0
-    if max_w and w > max_w:
-        ratio = min(ratio, max_w / w)
-    if max_h and h > max_h:
-        ratio = min(ratio, max_h / h)
-    img_obj.width = int(w * ratio)
-    img_obj.height = int(h * ratio)
+    def place_image(img_obj, anchor, max_w=None, max_h=None):
+        """Redimensionne et place une image à une position donnée."""
+        if img_obj is None:
+            return
 
-    img_obj.anchor = anchor
-    ws.add_image(img_obj)
+        w, h = img_obj.width, img_obj.height
+        ratio = 1.0
 
-# --- Position + tailles ---
-VEH_ANCHOR = "D15"   # centrer véhicule
-CLIENT_ANCHOR = "J5" # logo client
-CARBU_ANCHOR = "J12" # picto carburant
+        if max_w and w > max_w:
+            ratio = min(ratio, max_w / w)
+        if max_h and h > max_h:
+            ratio = min(ratio, max_h / h)
 
-VEH_MAX_W, VEH_MAX_H = 900, 350
-LOGO_MAX_W, LOGO_MAX_H = 250, 150
-CARBU_MAX_W, CARBU_MAX_H = 180, 120
+        img_obj.width = int(w * ratio)
+        img_obj.height = int(h * ratio)
 
-img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
-img_client_path = resolve_image_path(veh.get("Image Client"), "clients")
-img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "carburant")
+        img_obj.anchor = anchor
+        ws.add_image(img_obj)
 
-# Image véhicule
-if img_veh_upload:
-    place_image(XLImage(BytesIO(img_veh_upload.read())), VEH_ANCHOR, VEH_MAX_W, VEH_MAX_H)
-elif img_veh_path and os.path.exists(img_veh_path):
-    place_image(XLImage(img_veh_path), VEH_ANCHOR, VEH_MAX_W, VEH_MAX_H)
+    # Positions des images dans le modèle Excel
+    VEH_ANCHOR = "D15"     # véhicule centré
+    CLIENT_ANCHOR = "J5"   # logo client
+    CARBU_ANCHOR = "J12"   # picto carburant
 
-# Logo client
-if img_client_upload:
-    place_image(XLImage(BytesIO(img_client_upload.read())), CLIENT_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
-elif img_client_path and os.path.exists(img_client_path):
-    place_image(XLImage(img_client_path), CLIENT_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
+    # Dimensions maximales
+    VEH_MAX_W, VEH_MAX_H = 900, 350
+    LOGO_MAX_W, LOGO_MAX_H = 250, 150
+    CARBU_MAX_W, CARBU_MAX_H = 180, 120
 
-# Picto carburant
-if img_carbu_upload:
-    place_image(XLImage(BytesIO(img_carbu_upload.read())), CARBU_ANCHOR, CARBU_MAX_W, CARBU_MAX_H)
-elif img_carbu_path and os.path.exists(img_carbu_path):
-    place_image(XLImage(img_carbu_path), CARBU_ANCHOR, CARBU_MAX_W, CARBU_MAX_H)
+    # Résolution des chemins
+    img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
+    img_client_path = resolve_image_path(veh.get("Image Client"), "clients")
+    img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "carburant")
+
+    # Ajout des images selon upload → sinon BDD → sinon rien
+    # Image véhicule
+    if img_veh_upload:
+        place_image(XLImage(BytesIO(img_veh_upload.read())), VEH_ANCHOR,
+                    VEH_MAX_W, VEH_MAX_H)
+    elif img_veh_path and os.path.exists(img_veh_path):
+        place_image(XLImage(img_veh_path), VEH_ANCHOR, VEH_MAX_W, VEH_MAX_H)
+
+    # Logo client
+    if img_client_upload:
+        place_image(XLImage(BytesIO(img_client_upload.read())), CLIENT_ANCHOR,
+                    LOGO_MAX_W, LOGO_MAX_H)
+    elif img_client_path and os.path.exists(img_client_path):
+        place_image(XLImage(img_client_path), CLIENT_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
+
+    # Picto carburant
+    if img_carbu_upload:
+        place_image(XLImage(BytesIO(img_carbu_upload.read())), CARBU_ANCHOR,
+                    CARBU_MAX_W, CARBU_MAX_H)
+    elif img_carbu_path and os.path.exists(img_carbu_path):
+        place_image(XLImage(img_carbu_path), CARBU_ANCHOR, CARBU_MAX_W, CARBU_MAX_H)
 
 
 
