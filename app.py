@@ -216,7 +216,35 @@ def genere_ft_excel(
         if col_bdd in veh.index:
             ws[cell_addr] = veh[col_bdd]
 
-    # ----- 2) IMAGES (véhicule, client, carburant) -----
+        # ----- 2) IMAGES (véhicule, client, carburant) -----
+
+    # Petits helpers pour bien positionner et redimensionner
+    def place_image(img_obj, anchor, max_w=None, max_h=None):
+        """Place une image sur la feuille Excel à la cellule 'anchor' en la
+        redimensionnant éventuellement pour ne pas casser la mise en page."""
+        if img_obj is None:
+            return
+
+        w, h = img_obj.width, img_obj.height
+        ratio = 1.0
+        if max_w and w > max_w:
+            ratio = min(ratio, max_w / w)
+        if max_h and h > max_h:
+            ratio = min(ratio, max_h / h)
+
+        img_obj.width = int(w * ratio)
+        img_obj.height = int(h * ratio)
+        img_obj.anchor = anchor
+        ws.add_image(img_obj)
+
+    # Ancrages dans ta FT (à adapter si besoin)
+    VEH_ANCHOR = "B15"   # grand dessin véhicule au centre gauche
+    CLIENT_ANCHOR = "K6" # logo client, en haut à droite
+    CARBU_ANCHOR = "K13" # picto carburant, en dessous du logo client
+
+    # Tailles max (en pixels) pour chaque type d'image
+    VEH_MAX_W, VEH_MAX_H = 600, 220
+    LOGO_MAX_W, LOGO_MAX_H = 150, 90
 
     img_veh_val = veh.get("Image Vehicule")
     img_client_val = veh.get("Image Client")
@@ -227,38 +255,33 @@ def genere_ft_excel(
     img_client_path = resolve_image_path(img_client_val, "clients")
     img_carbu_path = resolve_image_path(img_carbu_val, "carburant")
 
-    # Image véhicule
+    # ----- Image véhicule -----
     if img_veh_upload is not None:
         data = img_veh_upload.read()
-        veh_img = XLImage(BytesIO(data))
-        veh_img.anchor = "B15"
-        ws.add_image(veh_img)
+        img_obj = XLImage(BytesIO(data))
+        place_image(img_obj, VEH_ANCHOR, VEH_MAX_W, VEH_MAX_H)
     elif img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
-        xl_img_veh = XLImage(img_veh_path)
-        xl_img_veh.anchor = "B15"
-        ws.add_image(xl_img_veh)
+        img_obj = XLImage(img_veh_path)
+        place_image(img_obj, VEH_ANCHOR, VEH_MAX_W, VEH_MAX_H)
 
-    # Image client
+    # ----- Logo client -----
     if img_client_upload is not None:
         data = img_client_upload.read()
-        client_img = XLImage(BytesIO(data))
-        client_img.anchor = "H2"
-        ws.add_image(client_img)
+        img_obj = XLImage(BytesIO(data))
+        place_image(img_obj, CLIENT_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
     elif img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
-        xl_img_client = XLImage(img_client_path)
-        xl_img_client.anchor = "H2"
-        ws.add_image(xl_img_client)
+        img_obj = XLImage(img_client_path)
+        place_image(img_obj, CLIENT_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
 
-    # Picto carburant
+    # ----- Picto carburant -----
     if img_carbu_upload is not None:
         data = img_carbu_upload.read()
-        carbu_img = XLImage(BytesIO(data))
-        carbu_img.anchor = "H15"
-        ws.add_image(carbu_img)
+        img_obj = XLImage(BytesIO(data))
+        place_image(img_obj, CARBU_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
     elif img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
-        xl_img_carbu = XLImage(img_carbu_path)
-        xl_img_carbu.anchor = "H15"
-        ws.add_image(xl_img_carbu)
+        img_obj = XLImage(img_carbu_path)
+        place_image(img_obj, CARBU_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
+
 
     # ----- 3) COMPOSANTS & OPTIONS -----
 
