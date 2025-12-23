@@ -377,10 +377,10 @@ def genere_ft_excel(
         veh.get("CH_Chassis"),
         veh.get("CH_Chassis-OPTIONS"),
     )
-    ch_prod_row = find_row(chassis, ch_prod_code, "CH_chassis")
-    ch_opt_row = find_row(chassis, ch_opt_code, "CH_chassis")
-    write_block("H18", build_values(ch_prod_row, "CH_chassis"), max_rows=17)
-    write_block("H37", build_values(ch_opt_row, "CH_chassis"), max_rows=3)
+    ch_prod_row = find_row(chassis, CH_prod_code, "CH_chassis")
+    ch_opt_row = find_row(chassis, CH_opt_code, "CH_chassis")
+    write_block("H18", build_values(CH_prod_row, "CH_chassis"), max_rows=17)
+    write_block("H37", build_values(CH_opt_row, "CH_chassis"), max_rows=3)
 
     # CAISSE / CARROSSERIE
     caisse_prod_code, caisse_opt_code = choose_codes(
