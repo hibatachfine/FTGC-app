@@ -292,7 +292,7 @@ def genere_ft_excel(
     comb_veh = " - ".join(veh_parts)
 
     # Type de caisse : frigo si groupe frigo renseigné, sinon sèche
-    gf_val = veh.get("C_Groupe frigo")
+    gf_val = veh.get("GF_Groupe frigo")
     if isinstance(gf_val, str) and gf_val.strip() and gf_val.strip().upper() != "GF_VIDE":
         type_caisse = "CAISSE FRIGORIFIQUE"
     else:
@@ -374,24 +374,24 @@ def genere_ft_excel(
     # CHASSIS
     ch_prod_code, ch_opt_code = choose_codes(
         ch_prod_choice, ch_opt_choice,
-        veh.get("C_Chassis"),
-        veh.get("C_Chassis-OPTIONS"),
+        veh.get("CH_Chassis"),
+        veh.get("CH_Chassis-OPTIONS"),
     )
-    ch_prod_row = find_row(chassis, ch_prod_code, "c_chassis")
-    ch_opt_row = find_row(chassis, ch_opt_code, "c_chassis")
-    write_block("H18", build_values(ch_prod_row, "c_chassis"), max_rows=17)
-    write_block("H37", build_values(ch_opt_row, "c_chassis"), max_rows=3)
+    ch_prod_row = find_row(chassis, ch_prod_code, "CH_chassis")
+    ch_opt_row = find_row(chassis, ch_opt_code, "CH_chassis")
+    write_block("H18", build_values(ch_prod_row, "CH_chassis"), max_rows=17)
+    write_block("H37", build_values(ch_opt_row, "CH_chassis"), max_rows=3)
 
     # CAISSE / CARROSSERIE
     caisse_prod_code, caisse_opt_code = choose_codes(
         caisse_prod_choice, caisse_opt_choice,
-        veh.get("C_Caisse"),
-        veh.get("C_Caisse-OPTIONS"),
+        veh.get("CF_caisse"),
+        veh.get("CF_caisse-OPTIONS"),
     )
-    caisse_prod_row = find_row(caisses, caisse_prod_code, "c_caisse")
-    caisse_opt_row = find_row(caisses, caisse_opt_code, "c_caisse")
-    write_block("B40", build_values(caisse_prod_row, "c_caisse"), max_rows=5)
-    write_block("B47", build_values(caisse_opt_row, "c_caisse"), max_rows=2)
+    caisse_prod_row = find_row(caisses, caisse_prod_code, "CF_caisse")
+    caisse_opt_row = find_row(caisses, caisse_opt_code, "CF_caisse")
+    write_block("B40", build_values(caisse_prod_row, "CF_caisse"), max_rows=5)
+    write_block("B47", build_values(caisse_opt_row, "CF_caisse"), max_rows=2)
 
     # GROUPE FRIGO
     gf_prod_code, gf_opt_code = choose_codes(
@@ -399,10 +399,10 @@ def genere_ft_excel(
         veh.get("C_Groupe frigo"),
         veh.get("C_Groupe frigo-OPTIONS"),
     )
-    gf_prod_row = find_row(frigo, gf_prod_code, "c_groupe frigo")
-    gf_opt_row = find_row(frigo, gf_opt_code, "c_groupe frigo")
-    write_block("B51", build_values(gf_prod_row, "c_groupe frigo"), max_rows=6)
-    write_block("B59", build_values(gf_opt_row, "c_groupe frigo"), max_rows=2)
+    gf_prod_row = find_row(frigo, gf_prod_code, "GF_groupe frigo")
+    gf_opt_row = find_row(frigo, gf_opt_code, "GF_groupe frigo")
+    write_block("B51", build_values(gf_prod_row, "GF_groupe frigo"), max_rows=6)
+    write_block("B59", build_values(gf_opt_row, "GF_groupe frigo"), max_rows=2)
 
     # HAYON
     hay_prod_code, hay_opt_code = choose_codes(
@@ -410,10 +410,10 @@ def genere_ft_excel(
         veh.get("C_Hayon elevateur"),
         veh.get("C_Hayon elevateur-OPTIONS"),
     )
-    hay_prod_row = find_row(hayons, hay_prod_code, "c_hayon elevateur")
-    hay_opt_row = find_row(hayons, hay_opt_code, "c_hayon elevateur")
-    write_block("B61", build_values(hay_prod_row, "c_hayon elevateur"), max_rows=5)
-    write_block("B68", build_values(hay_opt_row, "c_hayon elevateur"), max_rows=3)
+    hay_prod_row = find_row(hayons, hay_prod_code, "HL_hayon elevateur")
+    hay_opt_row = find_row(hayons, hay_opt_code, "HL_hayon elevateur")
+    write_block("B61", build_values(hay_prod_row, "HL_hayon elevateur"), max_rows=5)
+    write_block("B68", build_values(hay_opt_row, "HL_hayon elevateur"), max_rows=3)
 
     # ---------- 4) Dimensions & poids ----------
 
@@ -481,17 +481,17 @@ df_filtre, cab_opt_choice = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine
 df_filtre, mot_prod_choice = filtre_select(df_filtre, "M_moteur", "Moteur - code produit")
 df_filtre, mot_opt_choice = filtre_select(df_filtre, "M_moteur-OPTIONS", "Moteur - code options")
 
-df_filtre, ch_prod_choice = filtre_select(df_filtre, "C_Chassis", "Châssis - code produit")
-df_filtre, ch_opt_choice = filtre_select(df_filtre, "C_Chassis-OPTIONS", "Châssis - code options")
+df_filtre, ch_prod_choice = filtre_select(df_filtre, "CH_Chassis", "Châssis - code produit")
+df_filtre, ch_opt_choice = filtre_select(df_filtre, "CH_Chassis-OPTIONS", "Châssis - code options")
 
-df_filtre, caisse_prod_choice = filtre_select(df_filtre, "C_Caisse", "Caisse - code produit")
-df_filtre, caisse_opt_choice = filtre_select(df_filtre, "C_Caisse-OPTIONS", "Caisse - code options")
+df_filtre, caisse_prod_choice = filtre_select(df_filtre, "CF_Caisse", "Caisse - code produit")
+df_filtre, caisse_opt_choice = filtre_select(df_filtre, "CF_Caisse-OPTIONS", "Caisse - code options")
 
-df_filtre, gf_prod_choice = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigo - code produit")
-df_filtre, gf_opt_choice = filtre_select(df_filtre, "C_Groupe frigo-OPTIONS", "Groupe frigo - code options")
+df_filtre, gf_prod_choice = filtre_select(df_filtre, "GF_Groupe frigo", "Groupe frigo - code produit")
+df_filtre, gf_opt_choice = filtre_select(df_filtre, "GF_Groupe frigo-OPTIONS", "Groupe frigo - code options")
 
-df_filtre, hay_prod_choice = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon - code produit")
-df_filtre, hay_opt_choice = filtre_select(df_filtre, "C_Hayon elevateur-OPTIONS", "Hayon - code options")
+df_filtre, hay_prod_choice = filtre_select(df_filtre, "HL_Hayon elevateur", "Hayon - code produit")
+df_filtre, hay_opt_choice = filtre_select(df_filtre, "HL_Hayon elevateur-OPTIONS", "Hayon - code options")
 
 st.subheader("Résultats du filtrage")
 st.write(f"{len(df_filtre)} combinaison(s) véhicule trouvée(s).")
