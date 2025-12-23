@@ -38,7 +38,9 @@ def resolve_image_path(cell_value, subdir):
     if val.lower().startswith(("http://", "https://")):
         return val
 
-    # Chemin local / nom de fichier
+    # IMPORTANT: gérer les chemins Windows (backslashes) même sur Linux
+    val = val.replace("\\", "/")
+
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
 
@@ -129,10 +131,6 @@ def genere_ft_excel(
 ):
     """
     Génère une fiche technique Excel à partir du modèle 'FT_Grand_Compte.xlsx'
-    en utilisant :
-      - la ligne véhicule sélectionnée (veh)
-      - les choix de codes produit / options pour chaque composant
-      - éventuellement des images uploadées (véhicule / client / carburant)
     """
 
     global cabines, moteurs, chassis, caisses, frigo, hayons
@@ -145,7 +143,21 @@ def genere_ft_excel(
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"]  # nom de l’onglet dans le modèle
 
-    # ---------- petits helpers internes ----------
+    # ---------- Helpers internes ----------
+
+    def get_first_existing_col(df, candidates):
+        """Retourne la 1ère colonne existante parmi candidates, sinon None."""
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    def veh_get_any(veh_row, candidates, default=None):
+        """Récupère dans veh la 1ère colonne existante parmi candidates."""
+        for c in candidates:
+            if c in veh_row.index:
+                return veh_row.get(c)
+        return default
 
     def build_values(row, code_col):
         """Transforme une ligne de BDD composant en liste de valeurs (sans libellé)."""
@@ -180,13 +192,12 @@ def genere_ft_excel(
             cell = ws.cell(row=start_row + i, column=start_col)
             if isinstance(cell, MergedCell):
                 continue
-            if i < len(values):
-                cell.value = values[i]
-            else:
-                cell.value = None
+            cell.value = values[i] if i < len(values) else None
 
     def find_row(df, code, code_col):
-        """Retourne la première ligne de df où df[code_col] == code."""
+        """Retourne la première ligne de df où df[code_col] == code (si possible)."""
+        if df is None or code_col is None or code_col not in df.columns:
+            return None
         if not isinstance(code, str) or code.strip() == "":
             return None
         cand = df[df[code_col] == code]
@@ -195,10 +206,6 @@ def genere_ft_excel(
         return cand.iloc[0]
 
     def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
-        """
-        A partir des 2 filtres (code produit et code option),
-        renvoie (code_produit, code_option) à utiliser.
-        """
         prod_code = veh_prod
         opt_code = veh_opt
         if isinstance(prod_choice, str) and prod_choice not in (None, "", "Tous"):
@@ -206,19 +213,6 @@ def genere_ft_excel(
         if isinstance(opt_choice, str) and opt_choice not in (None, "", "Tous"):
             opt_code = opt_choice
         return prod_code, opt_code
-
-    def set_row_text(row_idx, search_substring, new_text):
-        """
-        Cherche dans la ligne row_idx la cellule qui contient search_substring
-        et remplace son contenu par new_text (utile pour les cellules fusionnées).
-        """
-        for cell in ws[row_idx]:
-            if isinstance(cell, MergedCell):
-                continue
-            val = cell.value
-            if isinstance(val, str) and search_substring.lower() in val.lower():
-                cell.value = new_text
-                break
 
     def place_image(img_obj, anchor, max_w=None, max_h=None):
         """Redimensionne et place une image à une position donnée."""
@@ -236,19 +230,12 @@ def genere_ft_excel(
         ws.add_image(img_obj)
 
     def set_merged_value(ws_local, cell_ref, value):
-        """
-        Écrit `value` dans cell_ref.
-        Si cell_ref est une MergedCell, on écrit dans la cellule
-        en haut à gauche de la plage fusionnée correspondante.
-        """
+        """Écrit value même si la cellule est fusionnée (écrit dans la top-left de la fusion)."""
         cell = ws_local[cell_ref]
-
-        # Si ce n'est pas une cellule fusionnée -> écriture directe
         if not isinstance(cell, MergedCell):
             cell.value = value
             return
 
-        # Sinon on retrouve la plage fusionnée contenant la cellule
         col_letters = "".join(ch for ch in cell_ref if ch.isalpha())
         row_digits = "".join(ch for ch in cell_ref if ch.isdigit())
         col_idx = column_index_from_string(col_letters)
@@ -259,14 +246,10 @@ def genere_ft_excel(
                 merged_range.min_row <= row_idx <= merged_range.max_row
                 and merged_range.min_col <= col_idx <= merged_range.max_col
             ):
-                top_left = ws_local.cell(row=merged_range.min_row, column=merged_range.min_col)
-                top_left.value = value
+                ws_local.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
                 return
 
-        # Si aucune plage fusionnée ne correspond (cas rare)
-        cell.value = value
-
-    # ---------- 1) En-tête "classique" (colonnes C5..C12) ----------
+    # ---------- 1) En-tête (C5..C12) ----------
 
     mapping_header = {
         "code_pays": "C5",
@@ -282,17 +265,15 @@ def genere_ft_excel(
         if col_bdd in veh.index:
             ws[cell_addr] = veh[col_bdd]
 
-    # ---------- 1bis) Lignes 1 et 2 : titre + Code PF ----------
+    # ---------- 1bis) TITRES LIGNE 1/2 ----------
 
-    # Combinaison véhicule (comme dans le select)
     veh_parts = []
     for key in ["code_pays", "Marque", "Modele", "Code_PF", "Standard_PF"]:
         if key in veh.index and pd.notna(veh[key]):
             veh_parts.append(str(veh[key]))
     comb_veh = " - ".join(veh_parts)
 
-    # Type de caisse : frigo si groupe frigo renseigné, sinon sèche
-    gf_val = veh.get("GF_Groupe frigo")
+    gf_val = veh_get_any(veh, ["GF_Groupe frigo", "C_Groupe frigo", "C_Groupe frigo "], default=None)
     if isinstance(gf_val, str) and gf_val.strip() and gf_val.strip().upper() != "GF_VIDE":
         type_caisse = "CAISSE FRIGORIFIQUE"
     else:
@@ -301,29 +282,24 @@ def genere_ft_excel(
     titre_ligne1 = f"{comb_veh} - {type_caisse}"
     code_pf_val = str(veh.get("Code_PF", "") or "")
 
-    # On écrit dans le bandeau vert (zone fusionnée centrée sur la ligne)
-    # Ici on vise C1 et C2, qui appartiennent au bandeau vert
+    # écriture dans bandeau vert centré (cellules fusionnées)
     set_merged_value(ws, "C1", titre_ligne1)
     set_merged_value(ws, "C2", f"CODE PF : {code_pf_val}")
 
-    # ---------- 2) Images (véhicule, client, carburant) ----------
+    # ---------- 2) Images ----------
 
-    # Positions dans le modèle (à ajuster si besoin)
-    VEH_ANCHOR = "B7"     # véhicule au centre
-    CLIENT_ANCHOR = "F8"  # logo client
-    CARBU_ANCHOR = "F11"  # picto carburant
+    VEH_ANCHOR = "B7"
+    CLIENT_ANCHOR = "F8"
+    CARBU_ANCHOR = "F11"
 
-    # Tailles max
     VEH_MAX_W, VEH_MAX_H = 800, 520
     LOGO_MAX_W, LOGO_MAX_H = 320, 240
     CARBU_MAX_W, CARBU_MAX_H = 260, 220
 
-    # Chemins issus de la BDD si pas d’upload
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
     img_client_path = resolve_image_path(veh.get("Image Client"), "clients")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "carburant")
 
-    # Image véhicule
     if img_veh_upload is not None:
         data = img_veh_upload.read()
         img_veh_upload.seek(0)
@@ -331,7 +307,6 @@ def genere_ft_excel(
     elif img_veh_path and os.path.exists(img_veh_path):
         place_image(XLImage(img_veh_path), VEH_ANCHOR, VEH_MAX_W, VEH_MAX_H)
 
-    # Logo client
     if img_client_upload is not None:
         data = img_client_upload.read()
         img_client_upload.seek(0)
@@ -339,7 +314,6 @@ def genere_ft_excel(
     elif img_client_path and os.path.exists(img_client_path):
         place_image(XLImage(img_client_path), CLIENT_ANCHOR, LOGO_MAX_W, LOGO_MAX_H)
 
-    # Picto carburant
     if img_carbu_upload is not None:
         data = img_carbu_upload.read()
         img_carbu_upload.seek(0)
@@ -347,75 +321,81 @@ def genere_ft_excel(
     elif img_carbu_path and os.path.exists(img_carbu_path):
         place_image(XLImage(img_carbu_path), CARBU_ANCHOR, CARBU_MAX_W, CARBU_MAX_H)
 
-    # ---------- 3) Composants & options ----------
+    # ---------- 3) Composants & options (robuste) ----------
 
     # CABINE
+    cab_code_col = get_first_existing_col(cabines, ["C_Cabine", "c_cabine", "CABINE"])
     cab_prod_code, cab_opt_code = choose_codes(
         cab_prod_choice, cab_opt_choice,
-        veh.get("C_Cabine"),
-        veh.get("C_Cabine-OPTIONS"),
+        veh_get_any(veh, ["C_Cabine"], default=None),
+        veh_get_any(veh, ["C_Cabine-OPTIONS"], default=None),
     )
-    cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine")
-    cab_opt_row = find_row(cabines, cab_opt_code, "C_Cabine")
-    write_block("B18", build_values(cab_prod_row, "C_Cabine"), max_rows=17)
-    write_block("B37", build_values(cab_opt_row, "C_Cabine"), max_rows=3)
+    cab_prod_row = find_row(cabines, cab_prod_code, cab_code_col)
+    cab_opt_row = find_row(cabines, cab_opt_code, cab_code_col)
+    write_block("B18", build_values(cab_prod_row, cab_code_col), max_rows=17)
+    write_block("B37", build_values(cab_opt_row, cab_code_col), max_rows=3)
 
     # MOTEUR
+    mot_code_col = get_first_existing_col(moteurs, ["M_moteur", "m_moteur", "MOTEUR"])
     mot_prod_code, mot_opt_code = choose_codes(
         mot_prod_choice, mot_opt_choice,
-        veh.get("M_moteur"),
-        veh.get("M_moteur-OPTIONS"),
+        veh_get_any(veh, ["M_moteur"], default=None),
+        veh_get_any(veh, ["M_moteur-OPTIONS"], default=None),
     )
-    mot_prod_row = find_row(moteurs, mot_prod_code, "M_moteur")
-    mot_opt_row = find_row(moteurs, mot_opt_code, "M_moteur")
-    write_block("F18", build_values(mot_prod_row, "M_moteur"), max_rows=17)
-    write_block("F37", build_values(mot_opt_row, "M_moteur"), max_rows=3)
+    mot_prod_row = find_row(moteurs, mot_prod_code, mot_code_col)
+    mot_opt_row = find_row(moteurs, mot_opt_code, mot_code_col)
+    write_block("F18", build_values(mot_prod_row, mot_code_col), max_rows=17)
+    write_block("F37", build_values(mot_opt_row, mot_code_col), max_rows=3)
 
     # CHASSIS
+    ch_code_col = get_first_existing_col(chassis, ["CH_chassis", "CH_Chassis", "c_chassis", "C_Chassis"])
     ch_prod_code, ch_opt_code = choose_codes(
         ch_prod_choice, ch_opt_choice,
-        veh.get("CH_Chassis"),
-        veh.get("CH_Chassis-OPTIONS"),
+        veh_get_any(veh, ["CH_Chassis", "C_Chassis"], default=None),
+        veh_get_any(veh, ["CH_Chassis-OPTIONS", "C_Chassis-OPTIONS"], default=None),
     )
-    ch_prod_row = find_row(chassis, CH_prod_code, "CH_chassis")
-    ch_opt_row = find_row(chassis, CH_opt_code, "CH_chassis")
-    write_block("H18", build_values(CH_prod_row, "CH_chassis"), max_rows=17)
-    write_block("H37", build_values(CH_opt_row, "CH_chassis"), max_rows=3)
+    ch_prod_row = find_row(chassis, ch_prod_code, ch_code_col)
+    ch_opt_row = find_row(chassis, ch_opt_code, ch_code_col)
+    write_block("H18", build_values(ch_prod_row, ch_code_col), max_rows=17)
+    write_block("H37", build_values(ch_opt_row, ch_code_col), max_rows=3)
 
     # CAISSE / CARROSSERIE
+    caisse_code_col = get_first_existing_col(caisses, ["CF_caisse", "CF_Caisse", "c_caisse", "C_Caisse"])
     caisse_prod_code, caisse_opt_code = choose_codes(
         caisse_prod_choice, caisse_opt_choice,
-        veh.get("CF_caisse"),
-        veh.get("CF_caisse-OPTIONS"),
+        veh_get_any(veh, ["CF_Caisse", "C_Caisse"], default=None),
+        veh_get_any(veh, ["CF_Caisse-OPTIONS", "C_Caisse-OPTIONS"], default=None),
     )
-    caisse_prod_row = find_row(caisses, caisse_prod_code, "CF_caisse")
-    caisse_opt_row = find_row(caisses, caisse_opt_code, "CF_caisse")
-    write_block("B40", build_values(caisse_prod_row, "CF_caisse"), max_rows=5)
-    write_block("B47", build_values(caisse_opt_row, "CF_caisse"), max_rows=2)
+    caisse_prod_row = find_row(caisses, caisse_prod_code, caisse_code_col)
+    caisse_opt_row = find_row(caisses, caisse_opt_code, caisse_code_col)
+    write_block("B40", build_values(caisse_prod_row, caisse_code_col), max_rows=5)
+    write_block("B47", build_values(caisse_opt_row, caisse_code_col), max_rows=2)
 
     # GROUPE FRIGO
+    gf_code_col = get_first_existing_col(frigo, ["GF_groupe frigo", "GF_Groupe frigo", "c_groupe frigo", "C_Groupe frigo"])
     gf_prod_code, gf_opt_code = choose_codes(
         gf_prod_choice, gf_opt_choice,
-        veh.get("C_Groupe frigo"),
-        veh.get("C_Groupe frigo-OPTIONS"),
+        veh_get_any(veh, ["GF_Groupe frigo", "C_Groupe frigo"], default=None),
+        veh_get_any(veh, ["GF_Groupe frigo-OPTIONS", "C_Groupe frigo-OPTIONS"], default=None),
     )
-    gf_prod_row = find_row(frigo, gf_prod_code, "GF_groupe frigo")
-    gf_opt_row = find_row(frigo, gf_opt_code, "GF_groupe frigo")
-    write_block("B51", build_values(gf_prod_row, "GF_groupe frigo"), max_rows=6)
-    write_block("B59", build_values(gf_opt_row, "GF_groupe frigo"), max_rows=2)
+    gf_prod_row = find_row(frigo, gf_prod_code, gf_code_col)
+    gf_opt_row = find_row(frigo, gf_opt_code, gf_code_col)
+    write_block("B51", build_values(gf_prod_row, gf_code_col), max_rows=6)
+    write_block("B59", build_values(gf_opt_row, gf_code_col), max_rows=2)
 
     # HAYON
+    hay_code_col = get_first_existing_col(hayons, ["HL_hayon elevateur", "HL_Hayon elevateur", "c_hayon elevateur", "C_Hayon elevateur"])
     hay_prod_code, hay_opt_code = choose_codes(
         hay_prod_choice, hay_opt_choice,
-        veh.get("C_Hayon elevateur"),
-        veh.get("C_Hayon elevateur-OPTIONS"),
+        veh_get_any(veh, ["HL_Hayon elevateur", "C_Hayon elevateur"], default=None),
+        veh_get_any(veh, ["HL_Hayon elevateur-OPTIONS", "C_Hayon elevateur-OPTIONS"], default=None),
     )
-    hay_prod_row = find_row(hayons, hay_prod_code, "HL_hayon elevateur")
-    hay_opt_row = find_row(hayons, hay_opt_code, "HL_hayon elevateur")
-    write_block("B61", build_values(hay_prod_row, "HL_hayon elevateur"), max_rows=5)
-    write_block("B68", build_values(hay_opt_row, "HL_hayon elevateur"), max_rows=3)
+    hay_prod_row = find_row(hayons, hay_prod_code, hay_code_col)
+    hay_opt_row = find_row(hayons, hay_opt_code, hay_code_col)
+    write_block("B61", build_values(hay_prod_row, hay_code_col), max_rows=5)
+    write_block("B68", build_values(hay_opt_row, hay_code_col), max_rows=3)
 
-    # ---------- 4) Dimensions & poids ----------
+    # ---------- 4) Dimensions & poids (inchangé) ----------
 
     col_Wint   = "W int\n utile \nsur plinthe"
     col_Lint   = "L int \nutile \nsur plinthe"
@@ -447,7 +427,7 @@ def genere_ft_excel(
     ws["I12"] = veh.get(col_volume)
     ws["I13"] = veh.get(col_pal)
 
-    # ---------- 5) Sauvegarde dans un buffer ----------
+    # ---------- 5) Sauvegarde ----------
 
     output = BytesIO()
     wb.save(output)
@@ -473,8 +453,7 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# Filtres composants : 1 filtre code produit + 1 filtre code options
-
+# Filtres composants (on garde tes noms, mais si absents -> pas de crash)
 df_filtre, cab_prod_choice = filtre_select(df_filtre, "C_Cabine", "Cabine - code produit")
 df_filtre, cab_opt_choice = filtre_select(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
 
@@ -533,13 +512,9 @@ st.subheader("Images associées")
 
 col1, col2, col3 = st.columns(3)
 
-img_veh_val = veh.get("Image Vehicule")
-img_client_val = veh.get("Image Client")
-img_carbu_val = veh.get("Image Carburant")
-
-img_veh_path = resolve_image_path(img_veh_val, "vehicules")
-img_client_path = resolve_image_path(img_client_val, "clients")
-img_carbu_path = resolve_image_path(img_carbu_val, "carburant")
+img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "vehicules")
+img_client_path = resolve_image_path(veh.get("Image Client"), "clients")
+img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "carburant")
 
 with col1:
     st.write("Image véhicule (BDD)")
