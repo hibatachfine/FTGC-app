@@ -253,11 +253,7 @@ def genere_ft_excel(
             cell.value = values[i] if i < len(values) else None
 
     def find_row(df, code, code_col_wanted):
-    """
-    Cherche strictement le code dans la colonne code_col_wanted.
-    Si la colonne n'existe pas (ex: CH_chassis / CF_caisse / GF_groupe frigo),
-    on prend automatiquement la 1ère colonne du sheet (qui est le code).
-    """
+  
     if not isinstance(code, str) or code.strip() == "" or code == "Tous":
         return None
 
