@@ -253,13 +253,27 @@ def genere_ft_excel(
             cell.value = values[i] if i < len(values) else None
 
     def find_row(df, code, code_col_wanted):
-        if not isinstance(code, str) or code.strip() == "" or code == "Tous":
-            return None
-        code_col = get_col(df, code_col_wanted) or code_col_wanted
-        cand = df[df[code_col].astype(str).str.strip() == code.strip()]
-        if cand.empty:
-            return None
-        return cand.iloc[0]
+    """
+    Cherche strictement le code dans la colonne code_col_wanted.
+    Si la colonne n'existe pas (ex: CH_chassis / CF_caisse / GF_groupe frigo),
+    on prend automatiquement la 1ère colonne du sheet (qui est le code).
+    """
+    if not isinstance(code, str) or code.strip() == "" or code == "Tous":
+        return None
+
+    # 1) essaie de retrouver la colonne demandée
+    code_col = None
+    if code_col_wanted in df.columns:
+        code_col = code_col_wanted
+    else:
+        # fallback : 1ère colonne du sheet = colonne code (CH_chassis, CF_caisse, GF_groupe frigo, etc.)
+        code_col = df.columns[0]
+
+    cand = df[df[code_col].astype(str).str.strip() == code.strip()]
+    if cand.empty:
+        return None
+    return cand.iloc[0]
+
 
     def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
         prod_code = veh_prod
