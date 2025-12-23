@@ -164,9 +164,34 @@ def affiche_composant(titre, code, df_ref, col_code_ref):
 
     st.write(f"Code composant : **{code}**")
 
-    # colonne ref robuste
-    col_ref = get_col(df_ref, col_code_ref) or col_code_ref
-    comp = df_ref[df_ref[col_ref] == code]
+    # --- colonne code robuste ---
+    # 1) essai exact
+    col_ref = col_code_ref if col_code_ref in df_ref.columns else None
+
+    # 2) essai insensible à la casse / espaces / retours ligne
+    if col_ref is None:
+        wanted = str(col_code_ref).strip().lower().replace("\n", " ")
+        for c in df_ref.columns:
+            cc = str(c).strip().lower().replace("\n", " ")
+            if cc == wanted:
+                col_ref = c
+                break
+
+    # 3) fallback : contient "chassis" / "cabine" / etc.
+    if col_ref is None:
+        wanted = str(col_code_ref).strip().lower().replace("\n", " ")
+        for c in df_ref.columns:
+            cc = str(c).strip().lower().replace("\n", " ")
+            if wanted in cc:
+                col_ref = c
+                break
+
+    if col_ref is None:
+        st.warning(f"Colonne code introuvable dans l'onglet référence pour {titre}. "
+                   f"Colonnes disponibles: {list(df_ref.columns)[:12]} ...")
+        return
+
+    comp = df_ref[df_ref[col_ref].astype(str).str.strip() == str(code).strip()]
 
     if comp.empty:
         st.warning("Code non trouvé dans la base de référence.")
