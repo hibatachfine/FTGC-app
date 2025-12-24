@@ -11,12 +11,12 @@ from openpyxl.cell.cell import MergedCell
 # ----------------- CONFIG APP -----------------
 
 st.set_page_config(
-    page_title="FT Grand Compte",
+    page_title="FT Grands Comptes",
     page_icon="🚚",
     layout="wide"
 )
 
-st.title("Generateur de Fiches Techniques Grand Compte")
+st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 
 IMG_ROOT = "images"  # dossier racine des images dans le repo
