@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import re
 from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
@@ -21,7 +22,7 @@ st.caption("Version de test basée sur bdd_CG.xlsx")
 IMG_ROOT = "images"  # dossier racine des images dans le repo
 
 
-# ----------------- HELPERS ROBUSTES (COLONNES / VALEURS) -----------------
+# ----------------- HELPERS ROBUSTES -----------------
 
 def _norm(s: str) -> str:
     if s is None:
@@ -33,17 +34,14 @@ def _norm(s: str) -> str:
     return s
 
 def get_col(df: pd.DataFrame, wanted: str):
-    """Retrouve une colonne même si variations (casse / espaces / retours ligne)."""
     if df is None or wanted is None:
         return None
     w = _norm(wanted)
 
-    # match exact normalisé
     for c in df.columns:
         if _norm(c) == w:
             return c
 
-    # fallback: contient
     for c in df.columns:
         if w in _norm(c):
             return c
@@ -51,20 +49,29 @@ def get_col(df: pd.DataFrame, wanted: str):
     return None
 
 def clean_unique_list(series: pd.Series):
-    """Nettoie les valeurs affichées dans un selectbox."""
     if series is None:
         return []
     s = series.dropna().astype(str).map(lambda x: x.strip())
     s = s[(s != "") & (s.str.lower() != "nan")]
     return sorted(s.unique().tolist())
 
+def extract_pf_key(code_pf: str):
+    """
+    Extrait une clé PF robuste :
+    ex: "35S14CF - 5 PAL - PASSION FROID" -> "35S14CF"
+    """
+    if not isinstance(code_pf, str) or code_pf.strip() == "":
+        return ""
+    # prend le token avant le premier " - "
+    return code_pf.split(" - ")[0].strip()
+
 
 # ----------------- FONCTIONS UTILES -----------------
 
 def resolve_image_path(cell_value, subdir):
     """
-    Transforme la valeur Excel (chemin complet, nom de fichier ou URL)
-    en chemin exploitable.
+    Valeur Excel (chemin, nom fichier ou URL) -> chemin local /images/subdir/filename
+    IMPORTANT : gère les chemins Windows \\serveur\... en remplaçant \ par /
     """
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
@@ -74,6 +81,8 @@ def resolve_image_path(cell_value, subdir):
     if val.lower().startswith(("http://", "https://")):
         return val
 
+    # IMPORTANT : Linux basename ne coupe pas sur "\" -> on convertit en "/"
+    val = val.replace("\\", "/")
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
 
@@ -111,7 +120,6 @@ def load_data():
 
 
 def filtre_select(df, col_wanted, label):
-    """Selectbox 'Tous + valeurs uniques' dans la sidebar et renvoie le DF filtré."""
     col = get_col(df, col_wanted)
     if col is None:
         st.sidebar.write(f"(colonne '{col_wanted}' absente)")
@@ -127,10 +135,6 @@ def filtre_select(df, col_wanted, label):
 
 
 def filtre_select_options(df, col_wanted, label):
-    """
-    Même logique que filtre_select mais pour les options.
-    Construit la liste depuis df (déjà filtré) => options cohérentes avec le véhicule/PF.
-    """
     col = get_col(df, col_wanted)
     if col is None:
         st.sidebar.write(f"(colonne '{col_wanted}' absente)")
@@ -153,7 +157,13 @@ def format_vehicule(row):
     return " – ".join(champs)
 
 
-def affiche_composant(titre, code, df_ref, col_code_ref):
+def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=None, prefer_po=None):
+    """
+    Affichage Streamlit (inchangé visuellement) mais recherche robuste :
+    - match exact sur code
+    - sinon fallback sur Code_PF (clé) dans la colonne code du sheet
+    - prefer_po : 'P' ou 'O' si colonne Produit/Option existe
+    """
     st.markdown("---")
     st.subheader(titre)
 
@@ -163,12 +173,30 @@ def affiche_composant(titre, code, df_ref, col_code_ref):
 
     st.write(f"Code composant : **{code}**")
 
-    # colonne code : on essaye col_code_ref, sinon 1ère colonne (souvent la colonne code)
-    col_ref = get_col(df_ref, col_code_ref)
-    if col_ref is None:
-        col_ref = df_ref.columns[0]
+    code_col = get_col(df_ref, col_code_ref) or df_ref.columns[0]
+    code_str = str(code).strip()
 
-    comp = df_ref[df_ref[col_ref].astype(str).str.strip() == str(code).strip()]
+    # colonne Produit/Option si existe
+    po_col = None
+    for c in df_ref.columns:
+        if "produit" in _norm(c) and "option" in _norm(c):
+            po_col = c
+            break
+
+    # 1) match exact
+    comp = df_ref[df_ref[code_col].astype(str).str.strip() == code_str]
+
+    # 2) fallback sur code_pf
+    if comp.empty and isinstance(code_pf_for_fallback, str) and code_pf_for_fallback.strip():
+        key = extract_pf_key(code_pf_for_fallback)
+        if key:
+            cand = df_ref[df_ref[code_col].astype(str).str.contains(re.escape(key), na=False)]
+            if prefer_po and po_col and not cand.empty:
+                cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
+                comp = cand_po if not cand_po.empty else cand
+            else:
+                comp = cand
+
     if comp.empty:
         st.warning("Code non trouvé dans la base de référence.")
         return
@@ -191,15 +219,13 @@ def genere_ft_excel(
     template_path = "FT_Grand_Compte.xlsx"
 
     if not os.path.exists(template_path):
-        st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo. "
-                "Ajoute-le à la racine pour activer la génération automatique.")
+        st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo.")
         return None
 
     wb = load_workbook(template_path, read_only=False, data_only=False)
-    ws = wb["date"]  # feuille FT
+    ws = wb["date"]
 
     def build_values(row, code_col):
-        """Liste de valeurs sans titres/colonnes techniques."""
         if row is None:
             return []
         vals = []
@@ -208,7 +234,7 @@ def genere_ft_excel(
                 continue
             if pd.isna(val) or str(val).strip() == "":
                 continue
-            name_lower = str(col).lower()
+            name_lower = _norm(col)
             if ("produit" in name_lower and "option" in name_lower) or name_lower.startswith("zone libre"):
                 continue
             if str(col).strip() == "_":
@@ -217,7 +243,6 @@ def genere_ft_excel(
         return vals
 
     def write_block(start_cell, values, max_rows):
-        """Ecrit values verticalement dans une colonne à partir de start_cell."""
         col_letters = "".join(ch for ch in start_cell if ch.isalpha())
         row_digits = "".join(ch for ch in start_cell if ch.isdigit())
         start_col = column_index_from_string(col_letters)
@@ -229,52 +254,73 @@ def genere_ft_excel(
                 continue
             cell.value = values[i] if i < len(values) else None
 
-    def find_row(df, code, code_col_wanted):
+    def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
         """
-        Cherche le code dans df.
-        Si code_col_wanted n'existe pas, on prend df.columns[0] (colonne code du sheet).
+        Recherche robuste :
+        1) match exact du code (si existe)
+        2) sinon fallback : cherche une ligne dont le code contient la clé Code_PF
+        3) prefer_po : 'P' ou 'O' si colonne Produit/Option présente
         """
         if not isinstance(code, str) or code.strip() == "" or code == "Tous":
-            return None
+            code = ""
 
-        code_col = get_col(df, code_col_wanted)
-        if code_col is None:
-            code_col = df.columns[0]
+        code_col = get_col(df, code_col_wanted) or df.columns[0]
 
-        cand = df[df[code_col].astype(str).str.strip() == code.strip()]
-        if cand.empty:
-            return None
-        return cand.iloc[0]
+        # colonne Produit/Option si existe
+        po_col = None
+        for c in df.columns:
+            if "produit" in _norm(c) and "option" in _norm(c):
+                po_col = c
+                break
+
+        # 1) exact
+        if code:
+            cand = df[df[code_col].astype(str).str.strip() == code.strip()]
+            if not cand.empty:
+                if prefer_po and po_col:
+                    cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
+                    return cand_po.iloc[0] if not cand_po.empty else cand.iloc[0]
+                return cand.iloc[0]
+
+        # 2) fallback Code_PF
+        if isinstance(code_pf_fallback, str) and code_pf_fallback.strip():
+            key = extract_pf_key(code_pf_fallback)
+            if key:
+                cand = df[df[code_col].astype(str).str.contains(re.escape(key), na=False)]
+                if not cand.empty:
+                    if prefer_po and po_col:
+                        cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
+                        return cand_po.iloc[0] if not cand_po.empty else cand.iloc[0]
+                    return cand.iloc[0]
+
+        return None
 
     def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
-        """Override par filtres si pas 'Tous'."""
         prod_code = veh_prod
         opt_code = veh_opt
-
         if isinstance(prod_choice, str) and prod_choice not in (None, "", "Tous"):
             prod_code = prod_choice
         if isinstance(opt_choice, str) and opt_choice not in (None, "", "Tous"):
             opt_code = opt_choice
-
         return prod_code, opt_code
 
-    # ---- Header (robuste sur veh) ----
-    header_map = [
-        ("code_pays", "C5"),
-        ("Marque", "C6"),
-        ("Modele", "C7"),
-        ("Code_PF", "C8"),
-        ("Standard_PF", "C9"),
-        ("catalogue_1\n PF", "C10"),
-        ("catalogue_2\nST", "C11"),
-        ("catalogue_3\nZR", "C12"),
-        ("catalogue_3\n LIBRE", "C12"),  # au cas où
-    ]
-    for col_name, cell in header_map:
-        if col_name in veh.index and pd.notna(veh.get(col_name)):
-            ws[cell] = veh.get(col_name)
+    # ---- HEADER ----
+    header_map = {
+        "code_pays": "C5",
+        "Marque": "C6",
+        "Modele": "C7",
+        "Code_PF": "C8",
+        "Standard_PF": "C9",
+        "catalogue_1\n PF": "C10",
+        "catalogue_2\nST": "C11",
+        "catalogue_3\nZR": "C12",
+        "catalogue_3\n LIBRE": "C12",
+    }
+    for k, cell in header_map.items():
+        if k in veh.index and pd.notna(veh.get(k)):
+            ws[cell] = veh.get(k)
 
-    # ---- Images ----
+    # ---- IMAGES ----
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
     img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
@@ -300,71 +346,61 @@ def genere_ft_excel(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ---- Composants ----
+    # ---- COMPOSANTS ----
     global cabines, moteurs, chassis, caisses, frigo, hayons
 
-    cab_prod_code, cab_opt_code = choose_codes(
-        cab_prod_choice, cab_opt_choice,
-        veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS")
-    )
-    mot_prod_code, mot_opt_code = choose_codes(
-        mot_prod_choice, mot_opt_choice,
-        veh.get("M_moteur"), veh.get("M_moteur-OPTIONS")
-    )
-    ch_prod_code, ch_opt_code = choose_codes(
-        ch_prod_choice, ch_opt_choice,
-        veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS")
-    )
-    caisse_prod_code, caisse_opt_code = choose_codes(
-        caisse_prod_choice, caisse_opt_choice,
-        veh.get("C_Caisse"), veh.get("C_Caisse-OPTIONS")
-    )
-    gf_prod_code, gf_opt_code = choose_codes(
-        gf_prod_choice, gf_opt_choice,
-        veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS")
-    )
-    hay_prod_code, hay_opt_code = choose_codes(
-        hay_prod_choice, hay_opt_choice,
-        veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS")
-    )
+    code_pf_ref = veh.get("Code_PF", "")
 
-    # CABINE
-    cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine")
-    cab_opt_row = find_row(cabines, cab_opt_code, "C_Cabine")
-    write_block("B18", build_values(cab_prod_row, (get_col(cabines, "C_Cabine") or cabines.columns[0])), 17)
-    write_block("B38", build_values(cab_opt_row, (get_col(cabines, "C_Cabine") or cabines.columns[0])), 3)
+    cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
+    mot_prod_code, mot_opt_code = choose_codes(mot_prod_choice, mot_opt_choice, veh.get("M_moteur"), veh.get("M_moteur-OPTIONS"))
+    ch_prod_code, ch_opt_code = choose_codes(ch_prod_choice, ch_opt_choice, veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS"))
+    caisse_prod_code, caisse_opt_code = choose_codes(caisse_prod_choice, caisse_opt_choice, veh.get("C_Caisse"), veh.get("C_Caisse-OPTIONS"))
+    gf_prod_code, gf_opt_code = choose_codes(gf_prod_choice, gf_opt_choice, veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS"))
+    hay_prod_code, hay_opt_code = choose_codes(hay_prod_choice, hay_opt_choice, veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS"))
+
+    # CABINE (Produit -> zone principale / Option -> zone options)
+    cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="P")
+    cab_opt_row  = find_row(cabines, cab_opt_code,  "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="O")
+    cab_codecol = get_col(cabines, "C_Cabine") or cabines.columns[0]
+    write_block("B18", build_values(cab_prod_row, cab_codecol), 17)
+    write_block("B38", build_values(cab_opt_row,  cab_codecol), 3)
 
     # MOTEUR
-    mot_prod_row = find_row(moteurs, mot_prod_code, "M_moteur")
-    mot_opt_row = find_row(moteurs, mot_opt_code, "M_moteur")
-    write_block("F18", build_values(mot_prod_row, (get_col(moteurs, "M_moteur") or moteurs.columns[0])), 17)
-    write_block("F38", build_values(mot_opt_row, (get_col(moteurs, "M_moteur") or moteurs.columns[0])), 3)
+    mot_prod_row = find_row(moteurs, mot_prod_code, "M_moteur", code_pf_fallback=code_pf_ref, prefer_po="P")
+    mot_opt_row  = find_row(moteurs, mot_opt_code,  "M_moteur", code_pf_fallback=code_pf_ref, prefer_po="O")
+    mot_codecol = get_col(moteurs, "M_moteur") or moteurs.columns[0]
+    write_block("F18", build_values(mot_prod_row, mot_codecol), 17)
+    write_block("F38", build_values(mot_opt_row,  mot_codecol), 3)
 
     # CHASSIS
-    ch_prod_row = find_row(chassis, ch_prod_code, "c_chassis")
-    ch_opt_row = find_row(chassis, ch_opt_code, "c_chassis")
-    write_block("H18", build_values(ch_prod_row, chassis.columns[0]), 17)
-    write_block("H38", build_values(ch_opt_row, chassis.columns[0]), 3)
+    ch_prod_row = find_row(chassis, ch_prod_code, "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="P")
+    ch_opt_row  = find_row(chassis, ch_opt_code,  "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="O")
+    ch_codecol = get_col(chassis, "CH_chassis") or chassis.columns[0]
+    write_block("H18", build_values(ch_prod_row, ch_codecol), 17)
+    write_block("H38", build_values(ch_opt_row,  ch_codecol), 3)
 
-    # CAISSE / CARROSSERIE
-    caisse_prod_row = find_row(caisses, caisse_prod_code, "c_caisse")
-    caisse_opt_row = find_row(caisses, caisse_opt_code, "c_caisse")
-    write_block("B40", build_values(caisse_prod_row, caisses.columns[0]), 5)
-    write_block("B47", build_values(caisse_opt_row, caisses.columns[0]), 2)
+    # CAISSE
+    caisse_prod_row = find_row(caisses, caisse_prod_code, "CF_caisse", code_pf_fallback=code_pf_ref, prefer_po="P")
+    caisse_opt_row  = find_row(caisses, caisse_opt_code,  "CF_caisse", code_pf_fallback=code_pf_ref, prefer_po="O")
+    caisse_codecol = get_col(caisses, "CF_caisse") or caisses.columns[0]
+    write_block("B40", build_values(caisse_prod_row, caisse_codecol), 5)
+    write_block("B47", build_values(caisse_opt_row,  caisse_codecol), 2)
 
-    # GROUPE FRIGO
-    gf_prod_row = find_row(frigo, gf_prod_code, "c_groupe frigo")
-    gf_opt_row = find_row(frigo, gf_opt_code, "c_groupe frigo")
-    write_block("B50", build_values(gf_prod_row, frigo.columns[0]), 6)
-    write_block("B58", build_values(gf_opt_row, frigo.columns[0]), 2)
+    # FRIGO
+    gf_prod_row = find_row(frigo, gf_prod_code, "GF_groupe frigo", code_pf_fallback=code_pf_ref, prefer_po="P")
+    gf_opt_row  = find_row(frigo, gf_opt_code,  "GF_groupe frigo", code_pf_fallback=code_pf_ref, prefer_po="O")
+    gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
+    write_block("B50", build_values(gf_prod_row, gf_codecol), 6)
+    write_block("B58", build_values(gf_opt_row,  gf_codecol), 2)
 
     # HAYON
-    hay_prod_row = find_row(hayons, hay_prod_code, "c_hayon elevateur")
-    hay_opt_row = find_row(hayons, hay_opt_code, "c_hayon elevateur")
-    write_block("B61", build_values(hay_prod_row, hayons.columns[0]), 5)
-    write_block("B68", build_values(hay_opt_row, hayons.columns[0]), 3)
+    hay_prod_row = find_row(hayons, hay_prod_code, "HL_hayon elevateur", code_pf_fallback=code_pf_ref, prefer_po="P")
+    hay_opt_row  = find_row(hayons, hay_opt_code,  "HL_hayon elevateur", code_pf_fallback=code_pf_ref, prefer_po="O")
+    hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
+    write_block("B61", build_values(hay_prod_row, hay_codecol), 5)
+    write_block("B68", build_values(hay_opt_row,  hay_codecol), 3)
 
-    # ---- DIMENSIONS (colonnes exactes de ta BDD) ----
+    # ---- DIMENSIONS ----
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
     ws["I6"]  = veh.get("L int \nutile \nsur plinthe")
     ws["I7"]  = veh.get("H int")
@@ -398,31 +434,30 @@ st.sidebar.header("Filtres véhicule")
 
 df_filtre = vehicules.copy()
 
-# Filtres principaux
 df_filtre, code_pays = filtre_select(df_filtre, "code_pays", "Code pays")
 df_filtre, marque = filtre_select(df_filtre, "Marque", "Marque")
 df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# Filtres composants : produit puis options (les options viennent du DF filtré)
+# composants (produit + options)
 df_filtre, cab_prod_choice = filtre_select(df_filtre, "C_Cabine", "Cabine - code produit")
-df_filtre, cab_opt_choice = filtre_select_options(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
+df_filtre, cab_opt_choice  = filtre_select_options(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
 
 df_filtre, mot_prod_choice = filtre_select(df_filtre, "M_moteur", "Moteur - code produit")
-df_filtre, mot_opt_choice = filtre_select_options(df_filtre, "M_moteur-OPTIONS", "Moteur - code options")
+df_filtre, mot_opt_choice  = filtre_select_options(df_filtre, "M_moteur-OPTIONS", "Moteur - code options")
 
-df_filtre, ch_prod_choice = filtre_select(df_filtre, "C_Chassis", "Châssis - code produit")
-df_filtre, ch_opt_choice = filtre_select_options(df_filtre, "C_Chassis-OPTIONS", "Châssis - code options")
+df_filtre, ch_prod_choice  = filtre_select(df_filtre, "C_Chassis", "Châssis - code produit")
+df_filtre, ch_opt_choice   = filtre_select_options(df_filtre, "C_Chassis-OPTIONS", "Châssis - code options")
 
 df_filtre, caisse_prod_choice = filtre_select(df_filtre, "C_Caisse", "Caisse - code produit")
-df_filtre, caisse_opt_choice = filtre_select_options(df_filtre, "C_Caisse-OPTIONS", "Caisse - code options")
+df_filtre, caisse_opt_choice  = filtre_select_options(df_filtre, "C_Caisse-OPTIONS", "Caisse - code options")
 
-df_filtre, gf_prod_choice = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigo - code produit")
-df_filtre, gf_opt_choice = filtre_select_options(df_filtre, "C_Groupe frigo-OPTIONS", "Groupe frigo - code options")
+df_filtre, gf_prod_choice  = filtre_select(df_filtre, "C_Groupe frigo", "Groupe frigo - code produit")
+df_filtre, gf_opt_choice   = filtre_select_options(df_filtre, "C_Groupe frigo-OPTIONS", "Groupe frigo - code options")
 
 df_filtre, hay_prod_choice = filtre_select(df_filtre, "C_Hayon elevateur", "Hayon - code produit")
-df_filtre, hay_opt_choice = filtre_select_options(df_filtre, "C_Hayon elevateur-OPTIONS", "Hayon - code options")
+df_filtre, hay_opt_choice  = filtre_select_options(df_filtre, "C_Hayon elevateur-OPTIONS", "Hayon - code options")
 
 st.subheader("Résultats du filtrage")
 st.write(f"{len(df_filtre)} combinaison(s) véhicule trouvée(s).")
@@ -446,51 +481,41 @@ st.markdown("---")
 st.subheader("Synthèse véhicule")
 
 cols_synthese = [
-    "code_pays",
-    "Marque",
-    "Modele",
-    "Code_PF",
-    "Standard_PF",
-    "catalogue_1\n PF",
-    "catalogue_2\nST",
-    "catalogue_3\nZR",
-    "catalogue_3\n LIBRE",
+    "code_pays", "Marque", "Modele", "Code_PF", "Standard_PF",
+    "catalogue_1\n PF", "catalogue_2\nST", "catalogue_3\nZR"
 ]
 cols_existantes = [c for c in cols_synthese if c in veh.index]
 st.table(veh[cols_existantes].to_frame(name="Valeur"))
 
 # ----------------- APERÇU IMAGES -----------------
 
-img_veh_val = veh.get("Image Vehicule")
-img_client_val = veh.get("Image Client")
-img_carbu_val = veh.get("Image Carburant")
-
-img_veh_path = resolve_image_path(img_veh_val, "Image Vehicule")
-img_client_path = resolve_image_path(img_client_val, "Image Client")
-img_carbu_path = resolve_image_path(img_carbu_val, "Image Carburant")
+img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
+img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
+img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
 
 st.subheader("Images associées")
 col1, col2, col3 = st.columns(3)
 
 with col1:
     show_image(img_veh_path, "Image véhicule")
-
 with col2:
     show_image(img_client_path, "Image client")
-
 with col3:
     show_image(img_carbu_path, "Picto carburant")
 
-# ----------------- DETAIL COMPOSANTS (inchangé) -----------------
+# ----------------- DETAIL COMPOSANTS (streamlit) -----------------
+# => fallback Code_PF (la même logique que la FT)
 
-affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine")
-affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "c_chassis")
-affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "c_caisse")
-affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur")
-affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "c_groupe frigo")
-affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "c_hayon elevateur")
+code_pf_ref = veh.get("Code_PF", "")
 
-# ----------------- BOUTON DE TÉLÉCHARGEMENT FT -----------------
+affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+
+# ----------------- BOUTON FT -----------------
 
 st.markdown("---")
 st.subheader("Génération de la fiche technique")
