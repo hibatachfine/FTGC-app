@@ -38,7 +38,6 @@ def get_col(df: pd.DataFrame, wanted: str):
     if df is None or wanted is None:
         return None
     w = _norm(wanted)
-
     for c in df.columns:
         if _norm(c) == w:
             return c
@@ -126,44 +125,6 @@ def format_vehicule(row):
             champs.append(str(row[c]))
     return " – ".join(champs)
 
-def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=None, prefer_po=None):
-    st.markdown("---")
-    st.subheader(titre)
-
-    if pd.isna(code) or str(code).strip() == "":
-        st.info("Aucun code renseigné pour ce composant.")
-        return
-
-    st.write(f"Code composant : **{code}**")
-
-    code_col = get_col(df_ref, col_code_ref) or df_ref.columns[0]
-    code_str = str(code).strip()
-
-    po_col = None
-    for c in df_ref.columns:
-        if "produit" in _norm(c) and "option" in _norm(c):
-            po_col = c
-            break
-
-    comp = df_ref[df_ref[code_col].astype(str).str.strip() == code_str]
-
-    if comp.empty and isinstance(code_pf_for_fallback, str) and code_pf_for_fallback.strip():
-        key = extract_pf_key(code_pf_for_fallback)
-        if key:
-            cand = df_ref[df_ref[code_col].astype(str).str.contains(re.escape(key), na=False)]
-            if prefer_po and po_col and not cand.empty:
-                cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
-                comp = cand_po if not cand_po.empty else cand
-            else:
-                comp = cand
-
-    if comp.empty:
-        st.warning("Code non trouvé dans la base de référence.")
-        return
-
-    comp_row = comp.iloc[0].dropna()
-    st.table(comp_row.to_frame(name="Valeur"))
-
 
 # ----------------- GENERATION FT (décalage + merged OK) -----------------
 
@@ -184,7 +145,7 @@ def genere_ft_excel(
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"]
 
-    HARD_CAP = 400  # sécurité (tu peux monter si besoin)
+    HARD_CAP = 400  # sécurité
 
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
@@ -216,44 +177,59 @@ def genere_ft_excel(
             vals.append(str(val).strip())
         return vals
 
-    def merge_range_for_cell(r, c):
-        """Retourne (min_row, min_col, max_row, max_col) si la cellule est dans une fusion, sinon None."""
+    # ---- merged helpers (FIX) ----
+
+    def merged_range_obj_for_cell(r, c):
+        """Retourne l'objet merge range si (r,c) est dans une fusion, sinon None."""
         for rng in ws.merged_cells.ranges:
             if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
-                return rng.min_row, rng.min_col, rng.max_row, rng.max_col
+                return rng
         return None
 
     def set_value_safe(r, c, value):
-        """Ecrit même si MergedCell : écrit dans la cellule top-left de la fusion."""
+        """
+        Écrit même si MergedCell :
+        - trouve la fusion
+        - unmerge temporairement
+        - écrit
+        - remmerge
+        """
         cell = ws.cell(row=r, column=c)
-        if isinstance(cell, MergedCell):
-            mr = merge_range_for_cell(r, c)
-            if mr:
-                r0, c0, _, _ = mr
-                ws.cell(row=r0, column=c0).value = value
-                return
+
+        # cell normale
+        if not isinstance(cell, MergedCell):
+            cell.value = value
             return
-        cell.value = value
+
+        rng = merged_range_obj_for_cell(r, c)
+        if rng is None:
+            # fallback (ne rien faire plutôt que planter)
+            return
+
+        coord = str(rng)  # ex "B38:D40"
+        r0, c0 = rng.min_row, rng.min_col
+
+        # unmerge -> write -> merge (évite AttributeError)
+        ws.unmerge_cells(coord)
+        tl = ws.cell(row=r0, column=c0)
+        tl.value = value
+        tl.alignment = Alignment(wrap_text=True, vertical="top")
+        ws.merge_cells(coord)
 
     def write_block_smart(start_cell, values, n_rows):
         """
-        - Si la zone est fusionnée sur plusieurs lignes => write en une cellule avec \n
-        - Sinon write ligne par ligne (safe merged)
+        Si la cellule de départ est dans une fusion => on écrit tout dans la top-left avec \\n
+        sinon => ligne par ligne
         """
         start_col, start_row = cell_to_rc(start_cell)
-        mr = merge_range_for_cell(start_row, start_col)
+        rng = merged_range_obj_for_cell(start_row, start_col)
 
-        # Si la cellule de départ est dans une fusion verticale => 1 seule cellule pour le bloc
-        if mr:
-            r0, c0, r1, c1 = mr
-            if (r1 - r0) >= 1:  # fusion sur plusieurs lignes
-                text = "\n".join(values[:HARD_CAP])
-                top_left = ws.cell(row=r0, column=c0)
-                top_left.value = text
-                top_left.alignment = Alignment(wrap_text=True, vertical="top")
-                return
+        if rng is not None:
+            # Une seule cellule fusionnée : on met tout dedans (sinon tu perds des lignes)
+            text = "\n".join(values[:HARD_CAP])
+            set_value_safe(start_row, start_col, text)
+            return
 
-        # Sinon : ligne par ligne
         for i in range(n_rows):
             v = values[i] if i < len(values) else None
             set_value_safe(start_row + i, start_col, v)
@@ -274,9 +250,9 @@ def genere_ft_excel(
         code_col = get_col(df, code_col_wanted) or df.columns[0]
 
         po_col = None
-        for c in df.columns:
-            if "produit" in _norm(c) and "option" in _norm(c):
-                po_col = c
+        for col in df.columns:
+            if "produit" in _norm(col) and "option" in _norm(col):
+                po_col = col
                 break
 
         if code:
@@ -403,7 +379,6 @@ def genere_ft_excel(
     hay_vals = build_values(hay_prod_row, hay_codecol)[:HARD_CAP]
     hay_opt_vals = build_values(hay_opt_row, hay_codecol)[:HARD_CAP]
 
-    # ---- ANCHORS template ----
     anchors = {
         "CAB_START": cell_to_rc("B18"),
         "MOT_START": cell_to_rc("F18"),
@@ -423,7 +398,7 @@ def genere_ft_excel(
         "HAY_OPT":   cell_to_rc("B68"),
     }
 
-    # --- Déplacement + écriture ---
+    # Décalage + écriture (les merges sont safe maintenant)
     TOP_DEFAULT = 17
     top_target = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
     extra_top = max(0, top_target - TOP_DEFAULT)
@@ -591,8 +566,6 @@ with col2:
     show_image(resolve_image_path(veh.get("Image Client"), "Image Client"), "Image client")
 with col3:
     show_image(resolve_image_path(veh.get("Image Carburant"), "Image Carburant"), "Picto carburant")
-
-# ----------------- BOUTON FT -----------------
 
 st.markdown("---")
 st.subheader("Génération de la fiche technique")
