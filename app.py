@@ -7,6 +7,7 @@ from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
 from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Alignment
 
 # ----------------- CONFIG APP -----------------
 
@@ -19,7 +20,7 @@ st.set_page_config(
 st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 
-IMG_ROOT = "images"  # dossier racine des images dans le repo
+IMG_ROOT = "images"
 
 
 # ----------------- HELPERS ROBUSTES -----------------
@@ -41,11 +42,9 @@ def get_col(df: pd.DataFrame, wanted: str):
     for c in df.columns:
         if _norm(c) == w:
             return c
-
     for c in df.columns:
         if w in _norm(c):
             return c
-
     return None
 
 def clean_unique_list(series: pd.Series):
@@ -66,39 +65,29 @@ def extract_pf_key(code_pf: str):
 def resolve_image_path(cell_value, subdir):
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
-
     val = cell_value.strip()
-
     if val.lower().startswith(("http://", "https://")):
         return val
-
-    # Linux basename ne coupe pas sur "\" -> on convertit en "/"
     val = val.replace("\\", "/")
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
 
-
 def show_image(path_or_url, caption):
     st.caption(caption)
-
     if not path_or_url:
         st.info("Pas d'image définie")
         return
-
     if isinstance(path_or_url, str) and path_or_url.lower().startswith(("http://", "https://")):
         st.image(path_or_url)
         return
-
     if os.path.exists(path_or_url):
         st.image(path_or_url)
     else:
         st.warning(f"Image introuvable : {path_or_url}")
 
-
 @st.cache_data
 def load_data():
     xls = pd.ExcelFile("bdd_CG.xlsx")
-
     vehicules = pd.read_excel(xls, "FS_referentiel_produits_std_Ver")
     cabines = pd.read_excel(xls, "CABINES")
     moteurs = pd.read_excel(xls, "MOTEURS")
@@ -106,39 +95,29 @@ def load_data():
     caisses = pd.read_excel(xls, "CAISSES")
     frigo = pd.read_excel(xls, "FRIGO")
     hayons = pd.read_excel(xls, "HAYONS")
-
     return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
-
 
 def filtre_select(df, col_wanted, label):
     col = get_col(df, col_wanted)
     if col is None:
         st.sidebar.write(f"(colonne '{col_wanted}' absente)")
         return df, None
-
     options = clean_unique_list(df[col])
     choix = st.sidebar.selectbox(label, ["Tous"] + options)
-
     if choix != "Tous":
         df = df[df[col].astype(str).str.strip() == str(choix).strip()]
-
     return df, choix
-
 
 def filtre_select_options(df, col_wanted, label):
     col = get_col(df, col_wanted)
     if col is None:
         st.sidebar.write(f"(colonne '{col_wanted}' absente)")
         return df, None
-
     options = clean_unique_list(df[col])
     choix = st.sidebar.selectbox(label, ["Tous"] + options)
-
     if choix != "Tous":
         df = df[df[col].astype(str).str.strip() == str(choix).strip()]
-
     return df, choix
-
 
 def format_vehicule(row):
     champs = []
@@ -146,7 +125,6 @@ def format_vehicule(row):
         if c in row and pd.notna(row[c]):
             champs.append(str(row[c]))
     return " – ".join(champs)
-
 
 def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=None, prefer_po=None):
     st.markdown("---")
@@ -187,7 +165,7 @@ def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=No
     st.table(comp_row.to_frame(name="Valeur"))
 
 
-# ----------------- GENERATION FT (avec décalage auto) -----------------
+# ----------------- GENERATION FT (décalage + merged OK) -----------------
 
 def genere_ft_excel(
     veh,
@@ -199,7 +177,6 @@ def genere_ft_excel(
     hay_prod_choice, hay_opt_choice,
 ):
     template_path = "FT_Grand_Compte.xlsx"
-
     if not os.path.exists(template_path):
         st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo.")
         return None
@@ -207,7 +184,7 @@ def genere_ft_excel(
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"]
 
-    HARD_CAP = 200  # sécurité anti-fichiers énormes
+    HARD_CAP = 400  # sécurité (tu peux monter si besoin)
 
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
@@ -239,13 +216,47 @@ def genere_ft_excel(
             vals.append(str(val).strip())
         return vals
 
-    def write_block(start_cell, values, n_rows):
+    def merge_range_for_cell(r, c):
+        """Retourne (min_row, min_col, max_row, max_col) si la cellule est dans une fusion, sinon None."""
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
+                return rng.min_row, rng.min_col, rng.max_row, rng.max_col
+        return None
+
+    def set_value_safe(r, c, value):
+        """Ecrit même si MergedCell : écrit dans la cellule top-left de la fusion."""
+        cell = ws.cell(row=r, column=c)
+        if isinstance(cell, MergedCell):
+            mr = merge_range_for_cell(r, c)
+            if mr:
+                r0, c0, _, _ = mr
+                ws.cell(row=r0, column=c0).value = value
+                return
+            return
+        cell.value = value
+
+    def write_block_smart(start_cell, values, n_rows):
+        """
+        - Si la zone est fusionnée sur plusieurs lignes => write en une cellule avec \n
+        - Sinon write ligne par ligne (safe merged)
+        """
         start_col, start_row = cell_to_rc(start_cell)
+        mr = merge_range_for_cell(start_row, start_col)
+
+        # Si la cellule de départ est dans une fusion verticale => 1 seule cellule pour le bloc
+        if mr:
+            r0, c0, r1, c1 = mr
+            if (r1 - r0) >= 1:  # fusion sur plusieurs lignes
+                text = "\n".join(values[:HARD_CAP])
+                top_left = ws.cell(row=r0, column=c0)
+                top_left.value = text
+                top_left.alignment = Alignment(wrap_text=True, vertical="top")
+                return
+
+        # Sinon : ligne par ligne
         for i in range(n_rows):
-            cell = ws.cell(row=start_row + i, column=start_col)
-            if isinstance(cell, MergedCell):
-                continue
-            cell.value = values[i] if i < len(values) else None
+            v = values[i] if i < len(values) else None
+            set_value_safe(start_row + i, start_col, v)
 
     def insert_rows_and_shift(anchors: dict, insert_at_row: int, n: int):
         if n <= 0:
@@ -375,22 +386,22 @@ def genere_ft_excel(
     gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
     hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
 
-    cab_vals = build_values(cab_prod_row, cab_codecol)
-    mot_vals = build_values(mot_prod_row, mot_codecol)
-    ch_vals  = build_values(ch_prod_row,  ch_codecol)
+    cab_vals = build_values(cab_prod_row, cab_codecol)[:HARD_CAP]
+    mot_vals = build_values(mot_prod_row, mot_codecol)[:HARD_CAP]
+    ch_vals  = build_values(ch_prod_row,  ch_codecol)[:HARD_CAP]
 
-    cab_opt_vals = build_values(cab_opt_row, cab_codecol)
-    mot_opt_vals = build_values(mot_opt_row, mot_codecol)
-    ch_opt_vals  = build_values(ch_opt_row,  ch_codecol)
+    cab_opt_vals = build_values(cab_opt_row, cab_codecol)[:HARD_CAP]
+    mot_opt_vals = build_values(mot_opt_row, mot_codecol)[:HARD_CAP]
+    ch_opt_vals  = build_values(ch_opt_row,  ch_codecol)[:HARD_CAP]
 
-    caisse_vals = build_values(caisse_prod_row, caisse_codecol)
-    caisse_opt_vals = build_values(caisse_opt_row, caisse_codecol)
+    caisse_vals = build_values(caisse_prod_row, caisse_codecol)[:HARD_CAP]
+    caisse_opt_vals = build_values(caisse_opt_row, caisse_codecol)[:HARD_CAP]
 
-    gf_vals = build_values(gf_prod_row, gf_codecol)
-    gf_opt_vals = build_values(gf_opt_row, gf_codecol)
+    gf_vals = build_values(gf_prod_row, gf_codecol)[:HARD_CAP]
+    gf_opt_vals = build_values(gf_opt_row, gf_codecol)[:HARD_CAP]
 
-    hay_vals = build_values(hay_prod_row, hay_codecol)
-    hay_opt_vals = build_values(hay_opt_row, hay_codecol)
+    hay_vals = build_values(hay_prod_row, hay_codecol)[:HARD_CAP]
+    hay_opt_vals = build_values(hay_opt_row, hay_codecol)[:HARD_CAP]
 
     # ---- ANCHORS template ----
     anchors = {
@@ -412,92 +423,84 @@ def genere_ft_excel(
         "HAY_OPT":   cell_to_rc("B68"),
     }
 
-    # ----------------- DÉCALAGE + ÉCRITURE SANS TRONCATURE -----------------
-    # Détails CAB/MOT/CH
+    # --- Déplacement + écriture ---
     TOP_DEFAULT = 17
-    top_target = min(HARD_CAP, max(len(cab_vals), len(mot_vals), len(ch_vals), 1))
+    top_target = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
     extra_top = max(0, top_target - TOP_DEFAULT)
     if extra_top > 0:
         insert_at = anchors["CAB_START"][1] + TOP_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_top)
 
-    write_block(rc_to_cell(*anchors["CAB_START"]), cab_vals, top_target)
-    write_block(rc_to_cell(*anchors["MOT_START"]), mot_vals, top_target)
-    write_block(rc_to_cell(*anchors["CH_START"]),  ch_vals,  top_target)
+    write_block_smart(rc_to_cell(*anchors["CAB_START"]), cab_vals, top_target)
+    write_block_smart(rc_to_cell(*anchors["MOT_START"]), mot_vals, top_target)
+    write_block_smart(rc_to_cell(*anchors["CH_START"]),  ch_vals,  top_target)
 
-    # Options CAB/MOT/CH
     OPT_DEFAULT = 3
-    opt_target = min(HARD_CAP, max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1))
+    opt_target = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1)
     extra_opt = max(0, opt_target - OPT_DEFAULT)
     if extra_opt > 0:
         insert_at = anchors["CAB_OPT"][1] + OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_opt)
 
-    write_block(rc_to_cell(*anchors["CAB_OPT"]), cab_opt_vals, opt_target)
-    write_block(rc_to_cell(*anchors["MOT_OPT"]), mot_opt_vals, opt_target)
-    write_block(rc_to_cell(*anchors["CH_OPT"]),  ch_opt_vals,  opt_target)
+    write_block_smart(rc_to_cell(*anchors["CAB_OPT"]), cab_opt_vals, opt_target)
+    write_block_smart(rc_to_cell(*anchors["MOT_OPT"]), mot_opt_vals, opt_target)
+    write_block_smart(rc_to_cell(*anchors["CH_OPT"]),  ch_opt_vals,  opt_target)
 
-    # CAISSE détails
     CAISSE_DEFAULT = 5
-    caisse_target = min(HARD_CAP, max(len(caisse_vals), 1))
+    caisse_target = max(len(caisse_vals), 1)
     extra_caisse = max(0, caisse_target - CAISSE_DEFAULT)
     if extra_caisse > 0:
         insert_at = anchors["CAISSE_START"][1] + CAISSE_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_caisse)
 
-    write_block(rc_to_cell(*anchors["CAISSE_START"]), caisse_vals, caisse_target)
+    write_block_smart(rc_to_cell(*anchors["CAISSE_START"]), caisse_vals, caisse_target)
 
-    # CAISSE options
     CAISSE_OPT_DEFAULT = 2
-    caisse_opt_target = min(HARD_CAP, max(len(caisse_opt_vals), 1))
+    caisse_opt_target = max(len(caisse_opt_vals), 1)
     extra_caisse_opt = max(0, caisse_opt_target - CAISSE_OPT_DEFAULT)
     if extra_caisse_opt > 0:
         insert_at = anchors["CAISSE_OPT"][1] + CAISSE_OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_caisse_opt)
 
-    write_block(rc_to_cell(*anchors["CAISSE_OPT"]), caisse_opt_vals, caisse_opt_target)
+    write_block_smart(rc_to_cell(*anchors["CAISSE_OPT"]), caisse_opt_vals, caisse_opt_target)
 
-    # FRIGO détails
     GF_DEFAULT = 6
-    gf_target = min(HARD_CAP, max(len(gf_vals), 1))
+    gf_target = max(len(gf_vals), 1)
     extra_gf = max(0, gf_target - GF_DEFAULT)
     if extra_gf > 0:
         insert_at = anchors["GF_START"][1] + GF_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_gf)
 
-    write_block(rc_to_cell(*anchors["GF_START"]), gf_vals, gf_target)
+    write_block_smart(rc_to_cell(*anchors["GF_START"]), gf_vals, gf_target)
 
-    # FRIGO options
     GF_OPT_DEFAULT = 2
-    gf_opt_target = min(HARD_CAP, max(len(gf_opt_vals), 1))
+    gf_opt_target = max(len(gf_opt_vals), 1)
     extra_gf_opt = max(0, gf_opt_target - GF_OPT_DEFAULT)
     if extra_gf_opt > 0:
         insert_at = anchors["GF_OPT"][1] + GF_OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_gf_opt)
 
-    write_block(rc_to_cell(*anchors["GF_OPT"]), gf_opt_vals, gf_opt_target)
+    write_block_smart(rc_to_cell(*anchors["GF_OPT"]), gf_opt_vals, gf_opt_target)
 
-    # HAYON détails
     HAY_DEFAULT = 5
-    hay_target = min(HARD_CAP, max(len(hay_vals), 1))
+    hay_target = max(len(hay_vals), 1)
     extra_hay = max(0, hay_target - HAY_DEFAULT)
     if extra_hay > 0:
         insert_at = anchors["HAY_START"][1] + HAY_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_hay)
 
-    write_block(rc_to_cell(*anchors["HAY_START"]), hay_vals, hay_target)
+    write_block_smart(rc_to_cell(*anchors["HAY_START"]), hay_vals, hay_target)
 
-    # HAYON options
     HAY_OPT_DEFAULT = 3
-    hay_opt_target = min(HARD_CAP, max(len(hay_opt_vals), 1))
+    hay_opt_target = max(len(hay_opt_vals), 1)
     extra_hay_opt = max(0, hay_opt_target - HAY_OPT_DEFAULT)
     if extra_hay_opt > 0:
         insert_at = anchors["HAY_OPT"][1] + HAY_OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_hay_opt)
 
-    write_block(rc_to_cell(*anchors["HAY_OPT"]), hay_opt_vals, hay_opt_target)
+    write_block_smart(rc_to_cell(*anchors["HAY_OPT"]), hay_opt_vals, hay_opt_target)
 
-    # ---- DIMENSIONS (inchangé) ----
+    # ---- DIMENSIONS ----
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
     ws["I6"]  = veh.get("L int \nutile \nsur plinthe")
     ws["I7"]  = veh.get("H int")
@@ -520,12 +523,12 @@ def genere_ft_excel(
     return output
 
 
-# ----------------- CHARGEMENT DES DONNÉES -----------------
+# ----------------- CHARGEMENT -----------------
 
 vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
 
 
-# ----------------- SIDEBAR : FILTRES -----------------
+# ----------------- FILTRES -----------------
 
 st.sidebar.header("Filtres véhicule")
 
@@ -537,7 +540,6 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# composants (produit + options)
 df_filtre, cab_prod_choice = filtre_select(df_filtre, "C_Cabine", "Cabine - code produit")
 df_filtre, cab_opt_choice  = filtre_select_options(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
 
@@ -563,15 +565,12 @@ if df_filtre.empty:
     st.warning("Aucun véhicule ne correspond aux filtres sélectionnés.")
     st.stop()
 
-# ----------------- CHOIX D'UNE LIGNE -----------------
-
 indices = list(df_filtre.index)
 choix_idx = st.selectbox(
     "Sélectionne le véhicule pour générer la FT :",
     indices,
     format_func=lambda i: format_vehicule(df_filtre.loc[i]),
 )
-
 veh = df_filtre.loc[choix_idx]
 
 st.markdown("---")
@@ -584,32 +583,14 @@ cols_synthese = [
 cols_existantes = [c for c in cols_synthese if c in veh.index]
 st.table(veh[cols_existantes].to_frame(name="Valeur"))
 
-# ----------------- APERÇU IMAGES -----------------
-
-img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
-img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
-img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
-
 st.subheader("Images associées")
 col1, col2, col3 = st.columns(3)
-
 with col1:
-    show_image(img_veh_path, "Image véhicule")
+    show_image(resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule"), "Image véhicule")
 with col2:
-    show_image(img_client_path, "Image client")
+    show_image(resolve_image_path(veh.get("Image Client"), "Image Client"), "Image client")
 with col3:
-    show_image(img_carbu_path, "Picto carburant")
-
-# ----------------- DETAIL COMPOSANTS -----------------
-
-code_pf_ref = veh.get("Code_PF", "")
-
-affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+    show_image(resolve_image_path(veh.get("Image Carburant"), "Image Carburant"), "Picto carburant")
 
 # ----------------- BOUTON FT -----------------
 
