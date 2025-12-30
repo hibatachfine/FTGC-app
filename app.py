@@ -207,16 +207,7 @@ def genere_ft_excel(
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"]
 
-    # ---- Réglages max lignes ----
-    MAX = {
-        "CAB": 20,
-        "MOT": 8,
-        "CH": 16,
-        "CAISSE": 33,
-        "GF": 10,
-        "HAY": 11,
-        "OPT": 8,  # options par bloc (tu peux monter à 12 si besoin)
-    }
+    HARD_CAP = 200  # sécurité anti-fichiers énormes
 
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
@@ -224,7 +215,6 @@ def genere_ft_excel(
         return column_index_from_string(col_letters), int(row_digits)
 
     def rc_to_cell(col_idx: int, row_idx: int):
-        # convert col index -> letters
         letters = ""
         n = col_idx
         while n > 0:
@@ -250,7 +240,6 @@ def genere_ft_excel(
         return vals
 
     def write_block(start_cell, values, n_rows):
-        """Ecrit values verticalement sur n_rows (n_rows >= len(values) en général)."""
         start_col, start_row = cell_to_rc(start_cell)
         for i in range(n_rows):
             cell = ws.cell(row=start_row + i, column=start_col)
@@ -259,16 +248,12 @@ def genere_ft_excel(
             cell.value = values[i] if i < len(values) else None
 
     def insert_rows_and_shift(anchors: dict, insert_at_row: int, n: int):
-        """Insert n rows at insert_at_row and shift all anchors having row >= insert_at_row."""
         if n <= 0:
             return anchors
         ws.insert_rows(insert_at_row, n)
         new_anchors = {}
         for k, (c, r) in anchors.items():
-            if r >= insert_at_row:
-                new_anchors[k] = (c, r + n)
-            else:
-                new_anchors[k] = (c, r)
+            new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
         return new_anchors
 
     def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
@@ -283,7 +268,6 @@ def genere_ft_excel(
                 po_col = c
                 break
 
-        # exact
         if code:
             cand = df[df[code_col].astype(str).str.strip() == code.strip()]
             if not cand.empty:
@@ -292,7 +276,6 @@ def genere_ft_excel(
                     return cand_po.iloc[0] if not cand_po.empty else cand.iloc[0]
                 return cand.iloc[0]
 
-        # fallback Code_PF
         if isinstance(code_pf_fallback, str) and code_pf_fallback.strip():
             key = extract_pf_key(code_pf_fallback)
             if key:
@@ -367,7 +350,6 @@ def genere_ft_excel(
     gf_prod_code, gf_opt_code = choose_codes(gf_prod_choice, gf_opt_choice, veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS"))
     hay_prod_code, hay_opt_code = choose_codes(hay_prod_choice, hay_opt_choice, veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS"))
 
-    # Récup rows
     cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="P")
     cab_opt_row  = find_row(cabines, cab_opt_code,  "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="O")
 
@@ -386,7 +368,6 @@ def genere_ft_excel(
     hay_prod_row = find_row(hayons, hay_prod_code, "HL_hayon elevateur", code_pf_fallback=code_pf_ref, prefer_po="P")
     hay_opt_row  = find_row(hayons, hay_opt_code,  "HL_hayon elevateur", code_pf_fallback=code_pf_ref, prefer_po="O")
 
-    # Valeurs
     cab_codecol = get_col(cabines, "C_Cabine") or cabines.columns[0]
     mot_codecol = get_col(moteurs, "M_moteur") or moteurs.columns[0]
     ch_codecol  = get_col(chassis, "CH_chassis") or chassis.columns[0]
@@ -411,8 +392,7 @@ def genere_ft_excel(
     hay_vals = build_values(hay_prod_row, hay_codecol)
     hay_opt_vals = build_values(hay_opt_row, hay_codecol)
 
-    # ---- ANCHORS (positions initiales template) ----
-    # IMPORTANT : on ne change pas tes cellules, on les décale si on insert des lignes
+    # ---- ANCHORS template ----
     anchors = {
         "CAB_START": cell_to_rc("B18"),
         "MOT_START": cell_to_rc("F18"),
@@ -430,127 +410,94 @@ def genere_ft_excel(
 
         "HAY_START": cell_to_rc("B61"),
         "HAY_OPT":   cell_to_rc("B68"),
-
-        # Dimensions
-        "DIM_I5": cell_to_rc("I5"),
-        "DIM_K4": cell_to_rc("K4"),
-        "DIM_I10": cell_to_rc("I10"),
-        "DIM_I13": cell_to_rc("I13"),
     }
 
-    # ---- 1) Bande haute CAB/MOT/CH (détails) : on agrandit selon le max des 3 ----
-    top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), MAX["CAB"], MAX["MOT"], MAX["CH"])
-    # On garde les seuils composant, mais la "bande" doit couvrir le plus grand des 3
-    # => on calcule une hauteur cible raisonnable :
-    top_target = max(MAX["CAB"], MAX["MOT"], MAX["CH"], max(len(cab_vals), len(mot_vals), len(ch_vals)))
-    # longueur actuelle prévue par template : 17 (ton ancienne valeur)
+    # ----------------- DÉCALAGE + ÉCRITURE SANS TRONCATURE -----------------
+    # Détails CAB/MOT/CH
     TOP_DEFAULT = 17
+    top_target = min(HARD_CAP, max(len(cab_vals), len(mot_vals), len(ch_vals), 1))
     extra_top = max(0, top_target - TOP_DEFAULT)
-
     if extra_top > 0:
-        # insert après la zone détail (row 18 + 17 = 35)
         insert_at = anchors["CAB_START"][1] + TOP_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_top)
 
-    # Ecriture détails (on écrit top_target lignes pour aligner)
-    cab_start = rc_to_cell(*anchors["CAB_START"])
-    mot_start = rc_to_cell(*anchors["MOT_START"])
-    ch_start  = rc_to_cell(*anchors["CH_START"])
+    write_block(rc_to_cell(*anchors["CAB_START"]), cab_vals, top_target)
+    write_block(rc_to_cell(*anchors["MOT_START"]), mot_vals, top_target)
+    write_block(rc_to_cell(*anchors["CH_START"]),  ch_vals,  top_target)
 
-    write_block(cab_start, cab_vals, top_target)
-    write_block(mot_start, mot_vals, top_target)
-    write_block(ch_start,  ch_vals,  top_target)
-
-    # ---- 2) Bande options CAB/MOT/CH : on agrandit selon max options ----
-    opt_target = max(MAX["OPT"], len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals))
-    OPT_DEFAULT = 3  # ton ancienne valeur
+    # Options CAB/MOT/CH
+    OPT_DEFAULT = 3
+    opt_target = min(HARD_CAP, max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1))
     extra_opt = max(0, opt_target - OPT_DEFAULT)
-
     if extra_opt > 0:
         insert_at = anchors["CAB_OPT"][1] + OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_opt)
 
-    cab_opt_cell = rc_to_cell(*anchors["CAB_OPT"])
-    mot_opt_cell = rc_to_cell(*anchors["MOT_OPT"])
-    ch_opt_cell  = rc_to_cell(*anchors["CH_OPT"])
+    write_block(rc_to_cell(*anchors["CAB_OPT"]), cab_opt_vals, opt_target)
+    write_block(rc_to_cell(*anchors["MOT_OPT"]), mot_opt_vals, opt_target)
+    write_block(rc_to_cell(*anchors["CH_OPT"]),  ch_opt_vals,  opt_target)
 
-    write_block(cab_opt_cell, cab_opt_vals, opt_target)
-    write_block(mot_opt_cell, mot_opt_vals, opt_target)
-    write_block(ch_opt_cell,  ch_opt_vals,  opt_target)
-
-    # ---- 3) CAISSE (détails) ----
-    caisse_target = max(MAX["CAISSE"], len(caisse_vals))
-    CAISSE_DEFAULT = 5  # ton ancienne valeur
+    # CAISSE détails
+    CAISSE_DEFAULT = 5
+    caisse_target = min(HARD_CAP, max(len(caisse_vals), 1))
     extra_caisse = max(0, caisse_target - CAISSE_DEFAULT)
-
     if extra_caisse > 0:
         insert_at = anchors["CAISSE_START"][1] + CAISSE_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_caisse)
 
-    caisse_cell = rc_to_cell(*anchors["CAISSE_START"])
-    write_block(caisse_cell, caisse_vals, caisse_target)
+    write_block(rc_to_cell(*anchors["CAISSE_START"]), caisse_vals, caisse_target)
 
-    # ---- 4) CAISSE options ----
-    caisse_opt_target = max(MAX["OPT"], len(caisse_opt_vals))
+    # CAISSE options
     CAISSE_OPT_DEFAULT = 2
+    caisse_opt_target = min(HARD_CAP, max(len(caisse_opt_vals), 1))
     extra_caisse_opt = max(0, caisse_opt_target - CAISSE_OPT_DEFAULT)
-
     if extra_caisse_opt > 0:
         insert_at = anchors["CAISSE_OPT"][1] + CAISSE_OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_caisse_opt)
 
-    caisse_opt_cell = rc_to_cell(*anchors["CAISSE_OPT"])
-    write_block(caisse_opt_cell, caisse_opt_vals, caisse_opt_target)
+    write_block(rc_to_cell(*anchors["CAISSE_OPT"]), caisse_opt_vals, caisse_opt_target)
 
-    # ---- 5) FRIGO ----
-    gf_target = max(MAX["GF"], len(gf_vals))
+    # FRIGO détails
     GF_DEFAULT = 6
+    gf_target = min(HARD_CAP, max(len(gf_vals), 1))
     extra_gf = max(0, gf_target - GF_DEFAULT)
-
     if extra_gf > 0:
         insert_at = anchors["GF_START"][1] + GF_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_gf)
 
-    gf_cell = rc_to_cell(*anchors["GF_START"])
-    write_block(gf_cell, gf_vals, gf_target)
+    write_block(rc_to_cell(*anchors["GF_START"]), gf_vals, gf_target)
 
     # FRIGO options
-    gf_opt_target = max(MAX["OPT"], len(gf_opt_vals))
     GF_OPT_DEFAULT = 2
+    gf_opt_target = min(HARD_CAP, max(len(gf_opt_vals), 1))
     extra_gf_opt = max(0, gf_opt_target - GF_OPT_DEFAULT)
-
     if extra_gf_opt > 0:
         insert_at = anchors["GF_OPT"][1] + GF_OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_gf_opt)
 
-    gf_opt_cell = rc_to_cell(*anchors["GF_OPT"])
-    write_block(gf_opt_cell, gf_opt_vals, gf_opt_target)
+    write_block(rc_to_cell(*anchors["GF_OPT"]), gf_opt_vals, gf_opt_target)
 
-    # ---- 6) HAYON ----
-    hay_target = max(MAX["HAY"], len(hay_vals))
+    # HAYON détails
     HAY_DEFAULT = 5
+    hay_target = min(HARD_CAP, max(len(hay_vals), 1))
     extra_hay = max(0, hay_target - HAY_DEFAULT)
-
     if extra_hay > 0:
         insert_at = anchors["HAY_START"][1] + HAY_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_hay)
 
-    hay_cell = rc_to_cell(*anchors["HAY_START"])
-    write_block(hay_cell, hay_vals, hay_target)
+    write_block(rc_to_cell(*anchors["HAY_START"]), hay_vals, hay_target)
 
     # HAYON options
-    hay_opt_target = max(MAX["OPT"], len(hay_opt_vals))
     HAY_OPT_DEFAULT = 3
+    hay_opt_target = min(HARD_CAP, max(len(hay_opt_vals), 1))
     extra_hay_opt = max(0, hay_opt_target - HAY_OPT_DEFAULT)
-
     if extra_hay_opt > 0:
         insert_at = anchors["HAY_OPT"][1] + HAY_OPT_DEFAULT
         anchors = insert_rows_and_shift(anchors, insert_at, extra_hay_opt)
 
-    hay_opt_cell = rc_to_cell(*anchors["HAY_OPT"])
-    write_block(hay_opt_cell, hay_opt_vals, hay_opt_target)
+    write_block(rc_to_cell(*anchors["HAY_OPT"]), hay_opt_vals, hay_opt_target)
 
-    # ---- DIMENSIONS (inchangé, mais si tu veux les déplacer aussi : on peut) ----
+    # ---- DIMENSIONS (inchangé) ----
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
     ws["I6"]  = veh.get("L int \nutile \nsur plinthe")
     ws["I7"]  = veh.get("H int")
@@ -653,7 +600,7 @@ with col2:
 with col3:
     show_image(img_carbu_path, "Picto carburant")
 
-# ----------------- DETAIL COMPOSANTS (tu peux supprimer si tu veux) -----------------
+# ----------------- DETAIL COMPOSANTS -----------------
 
 code_pf_ref = veh.get("Code_PF", "")
 
