@@ -9,26 +9,19 @@ from openpyxl.utils import column_index_from_string
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment
 
-APP_VERSION = "2025-12-31_no_extra_rows_v1"  # <- tu dois voir ça dans la sidebar
-
+APP_VERSION = "2025-12-31_fix_indentation_extra_rows_v2"
 
 # ----------------- CONFIG APP -----------------
-
-st.set_page_config(
-    page_title="FT Grands Comptes",
-    page_icon="🚚",
-    layout="wide"
-)
-
+st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
 st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
-st.sidebar.info(f"✅ App version: {APP_VERSION}")
+
+st.sidebar.info(f"✅ Version: {APP_VERSION}")
 
 IMG_ROOT = "images"  # dossier racine des images dans le repo
 
 
-# ----------------- HELPERS ROBUSTES -----------------
-
+# ----------------- HELPERS -----------------
 def _norm(s: str) -> str:
     if s is None:
         return ""
@@ -68,12 +61,11 @@ def extract_pf_key(code_pf: str):
 
 
 # ----------------- IMAGES -----------------
-
 def resolve_image_path(cell_value, subdir):
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
-    val = cell_value.strip()
 
+    val = cell_value.strip()
     if val.lower().startswith(("http://", "https://")):
         return val
 
@@ -99,8 +91,7 @@ def show_image(path_or_url, caption):
         st.warning(f"Image introuvable : {path_or_url}")
 
 
-# ----------------- CHARGEMENT DATA -----------------
-
+# ----------------- LOAD DATA -----------------
 @st.cache_data
 def load_data():
     xls = pd.ExcelFile("bdd_CG.xlsx")
@@ -114,8 +105,7 @@ def load_data():
     return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
 
 
-# ----------------- FILTRES -----------------
-
+# ----------------- FILTERS -----------------
 def filtre_select(df, col_wanted, label):
     col = get_col(df, col_wanted)
     if col is None:
@@ -142,8 +132,7 @@ def format_vehicule(row):
     return " – ".join(champs)
 
 
-# ----------------- SYNTHÈSE COMPOSANTS (APP) -----------------
-
+# ----------------- SYNTH COMPONENT -----------------
 def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=None, prefer_po=None):
     st.markdown("---")
     st.subheader(titre)
@@ -183,8 +172,7 @@ def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=No
     st.table(comp_row.to_frame(name="Valeur"))
 
 
-# ----------------- GENERATION FT -----------------
-
+# ----------------- EXCEL GENERATION -----------------
 def genere_ft_excel(
     veh,
     cab_prod_choice, cab_opt_choice,
@@ -202,7 +190,7 @@ def genere_ft_excel(
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
 
-    # ---- helpers excel ----
+    # --- excel helpers ---
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
         row_digits = "".join(ch for ch in cell_addr if ch.isdigit())
@@ -237,7 +225,7 @@ def genere_ft_excel(
             new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
         return new_anchors
 
-    # ---- data helpers ----
+    # --- data helpers ---
     def build_values(row, code_col):
         if row is None:
             return []
@@ -296,7 +284,7 @@ def genere_ft_excel(
             opt_code = opt_choice
         return prod_code, opt_code
 
-    # ---- header ----
+    # ---- HEADER ----
     header_map = {
         "code_pays": "C5",
         "Marque": "C6",
@@ -312,7 +300,7 @@ def genere_ft_excel(
         if k in veh.index and pd.notna(veh.get(k)):
             ws[cell] = veh.get(k)
 
-    # ---- images ----
+    # ---- IMAGES ----
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
     img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
@@ -338,7 +326,7 @@ def genere_ft_excel(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ---- composants ----
+    # ---- COMPOSANTS ----
     global cabines, moteurs, chassis, caisses, frigo, hayons
     code_pf_ref = veh.get("Code_PF", "")
 
@@ -418,30 +406,29 @@ def genere_ft_excel(
         "HAY_OPT":  3,
     }
 
-    def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
+    # ✅ Fonction OK : extra_rows est défini ET utilisé uniquement ici
+    def ensure_space(anchor_key: str, base_rows: int, needed_rows: int):
         extra_rows = max(0, int(needed_rows) - int(base_rows))
-    if extra_rows <= 0:
-        return
+        if extra_rows <= 0:
+            return
+        start_col, start_row = anchors[anchor_key]
+        insert_at = start_row + int(base_rows)
+        new_anchors = insert_rows_and_shift(anchors, insert_at, extra_rows)
+        anchors.clear()
+        anchors.update(new_anchors)
 
-    start_col, start_row = anchors[start_anchor_key]
-    insert_at = start_row + int(base_rows)
-
-    new_anchors = insert_rows_and_shift(anchors, insert_at, extra_rows)
-    anchors.clear()
-    anchors.update(new_anchors)
-
-
+    # ---- WRITE BLOCKS ----
     top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
     ensure_space("CAB_START", BASE["TOP_MAIN"], top_needed)
     write_block_merged_safe(anchors["CAB_START"], cab_vals, top_needed)
     write_block_merged_safe(anchors["MOT_START"], mot_vals, top_needed)
-    write_block_merged_safe(anchors["CH_START"],  ch_vals,  top_needed)
+    write_block_merged_safe(anchors["CH_START"], ch_vals, top_needed)
 
     top_opt_needed = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1)
     ensure_space("CAB_OPT", BASE["TOP_OPT"], top_opt_needed)
     write_block_merged_safe(anchors["CAB_OPT"], cab_opt_vals, top_opt_needed)
     write_block_merged_safe(anchors["MOT_OPT"], mot_opt_vals, top_opt_needed)
-    write_block_merged_safe(anchors["CH_OPT"],  ch_opt_vals,  top_opt_needed)
+    write_block_merged_safe(anchors["CH_OPT"], ch_opt_vals, top_opt_needed)
 
     caisse_needed = max(len(caisse_vals), 1)
     ensure_space("CAISSE_START", BASE["CAISSE_MAIN"], caisse_needed)
@@ -467,6 +454,7 @@ def genere_ft_excel(
     ensure_space("HAY_OPT", BASE["HAY_OPT"], hay_opt_needed)
     write_block_merged_safe(anchors["HAY_OPT"], hay_opt_vals, hay_opt_needed)
 
+    # ---- DIMENSIONS ----
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
     ws["I6"]  = veh.get("L int \nutile \nsur plinthe")
     ws["I7"]  = veh.get("H int")
@@ -490,7 +478,6 @@ def genere_ft_excel(
 
 
 # ----------------- APP -----------------
-
 vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
 
 st.sidebar.header("Filtres véhicule")
@@ -561,32 +548,4 @@ with col3:
 code_pf_ref = veh.get("Code_PF", "")
 
 affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-
-st.markdown("---")
-st.subheader("Génération de la fiche technique")
-
-ft_file = genere_ft_excel(
-    veh,
-    cab_prod_choice, cab_opt_choice,
-    mot_prod_choice, mot_opt_choice,
-    ch_prod_choice, ch_opt_choice,
-    caisse_prod_choice, caisse_opt_choice,
-    gf_prod_choice, gf_opt_choice,
-    hay_prod_choice, hay_opt_choice,
-)
-
-if ft_file is not None:
-    nom_fichier = f"FT_{veh.get('Code_PF', 'PF')}_{veh.get('Modele', 'MODELE')}.xlsx"
-    st.download_button(
-        label=" Télécharger la fiche technique remplie",
-        data=ft_file,
-        file_name=nom_fichier,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-else:
-    st.info("Ajoute le modèle 'FT_Grand_Compte.xlsx' dans le repo pour activer le téléchargement.")
+affiche_composant("Châssis", veh.get("C_Chassis"),
