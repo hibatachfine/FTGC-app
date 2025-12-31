@@ -9,6 +9,7 @@ from openpyxl.utils import column_index_from_string
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment
 
+
 # ----------------- CONFIG APP -----------------
 
 st.set_page_config(
@@ -66,7 +67,7 @@ def extract_pf_key(code_pf: str):
     return code_pf.split(" - ")[0].strip()
 
 
-# ----------------- FONCTIONS UTILES -----------------
+# ----------------- IMAGES -----------------
 
 def resolve_image_path(cell_value, subdir):
     """
@@ -101,6 +102,9 @@ def show_image(path_or_url, caption):
     else:
         st.warning(f"Image introuvable : {path_or_url}")
 
+
+# ----------------- CHARGEMENT DATA -----------------
+
 @st.cache_data
 def load_data():
     xls = pd.ExcelFile("bdd_CG.xlsx")
@@ -114,6 +118,9 @@ def load_data():
     hayons = pd.read_excel(xls, "HAYONS")
 
     return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
+
+
+# ----------------- FILTRES -----------------
 
 def filtre_select(df, col_wanted, label):
     col = get_col(df, col_wanted)
@@ -143,6 +150,7 @@ def filtre_select_options(df, col_wanted, label):
 
     return df, choix
 
+
 def format_vehicule(row):
     champs = []
     for c in ["code_pays", "Marque", "Modele", "Code_PF", "Standard_PF"]:
@@ -150,10 +158,10 @@ def format_vehicule(row):
             champs.append(str(row[c]))
     return " – ".join(champs)
 
+
+# ----------------- SYNTHÈSE COMPOSANTS (APP) -----------------
+
 def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=None, prefer_po=None):
-    """
-    Affichage Streamlit (synthèse composants) -> on conserve comme avant
-    """
     st.markdown("---")
     st.subheader(titre)
 
@@ -212,20 +220,11 @@ def genere_ft_excel(
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"]
 
-    # ---- helpers excel ----
-
+    # --- Excel helpers ---
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
         row_digits = "".join(ch for ch in cell_addr if ch.isdigit())
         return column_index_from_string(col_letters), int(row_digits)
-
-    def rc_to_cell(col_idx: int, row_idx: int):
-        letters = ""
-        n = col_idx
-        while n > 0:
-            n, r = divmod(n - 1, 26)
-            letters = chr(65 + r) + letters
-        return f"{letters}{row_idx}"
 
     def merged_top_left(row, col):
         for rng in ws.merged_cells.ranges:
@@ -234,9 +233,6 @@ def genere_ft_excel(
         return row, col
 
     def set_cell_value_merged_safe(row, col, value):
-        """
-        Écrit toujours dans la top-left si cellule fusionnée (sinon lignes perdues)
-        """
         r0, c0 = merged_top_left(row, col)
         cell = ws.cell(row=r0, column=c0)
         if isinstance(cell, MergedCell):
@@ -245,18 +241,12 @@ def genere_ft_excel(
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     def write_block_merged_safe(start_rc, values, n_rows):
-        """
-        Écrit n_rows lignes à partir de start_rc=(col,row), merged-safe
-        """
         start_col, start_row = start_rc
         for i in range(n_rows):
             v = values[i] if i < len(values) else None
             set_cell_value_merged_safe(start_row + i, start_col, v)
 
     def insert_rows_and_shift(anchors: dict, insert_at_row: int, n: int):
-        """
-        Insert rows dans Excel et décale toutes les ancres dont row >= insert_at_row
-        """
         if n <= 0:
             return anchors
         ws.insert_rows(insert_at_row, n)
@@ -265,6 +255,7 @@ def genere_ft_excel(
             new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
         return new_anchors
 
+    # --- Data helpers ---
     def build_values(row, code_col):
         if row is None:
             return []
@@ -275,6 +266,7 @@ def genere_ft_excel(
             if pd.isna(val) or str(val).strip() == "":
                 continue
             name_lower = _norm(col)
+            # enlève les colonnes techniques / titres
             if ("produit" in name_lower and "option" in name_lower) or name_lower.startswith("zone libre"):
                 continue
             if str(col).strip() == "_":
@@ -401,7 +393,6 @@ def genere_ft_excel(
     gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
     hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
 
-    # listes (illimitées)
     cab_vals = build_values(cab_prod_row, cab_codecol)
     cab_opt_vals = build_values(cab_opt_row, cab_codecol)
 
@@ -440,10 +431,10 @@ def genere_ft_excel(
         "HAY_OPT":   cell_to_rc("B68"),
     }
 
-    # hauteurs "de base" du modèle (les zones existantes)
+    # hauteurs "de base" du modèle (zones existantes)
     BASE = {
-        "TOP_MAIN": 17,    # CAB/MOT/CH
-        "TOP_OPT":  3,     # options CAB/MOT/CH
+        "TOP_MAIN": 17,      # CAB/MOT/CH
+        "TOP_OPT":  3,       # options CAB/MOT/CH
         "CAISSE_MAIN": 5,
         "CAISSE_OPT":  2,
         "GF_MAIN": 6,
@@ -451,16 +442,16 @@ def genere_ft_excel(
         "HAY_MAIN": 5,
         "HAY_OPT":  3,
     }
+
     def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
         extra = max(0, needed_rows - base_rows)
-    if extra > 0:
+        if extra <= 0:
+            return
         start_col, start_row = anchors[start_anchor_key]
         insert_at = start_row + base_rows
         new_anchors = insert_rows_and_shift(anchors, insert_at, extra)
         anchors.clear()
         anchors.update(new_anchors)
-
-
 
     # ---- 1) TOP MAIN (CAB/MOT/CH) illimité ----
     top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
@@ -528,15 +519,11 @@ def genere_ft_excel(
     return output
 
 
-# ----------------- CHARGEMENT DES DONNÉES -----------------
+# ----------------- APP -----------------
 
 vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
 
-
-# ----------------- SIDEBAR : FILTRES -----------------
-
 st.sidebar.header("Filtres véhicule")
-
 df_filtre = vehicules.copy()
 
 df_filtre, code_pays = filtre_select(df_filtre, "code_pays", "Code pays")
@@ -545,7 +532,6 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
-# composants (produit + options)
 df_filtre, cab_prod_choice = filtre_select(df_filtre, "C_Cabine", "Cabine - code produit")
 df_filtre, cab_opt_choice  = filtre_select_options(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
 
@@ -571,15 +557,12 @@ if df_filtre.empty:
     st.warning("Aucun véhicule ne correspond aux filtres sélectionnés.")
     st.stop()
 
-# ----------------- CHOIX D'UNE LIGNE -----------------
-
 indices = list(df_filtre.index)
 choix_idx = st.selectbox(
     "Sélectionne le véhicule pour générer la FT :",
     indices,
     format_func=lambda i: format_vehicule(df_filtre.loc[i]),
 )
-
 veh = df_filtre.loc[choix_idx]
 
 st.markdown("---")
@@ -592,25 +575,18 @@ cols_synthese = [
 cols_existantes = [c for c in cols_synthese if c in veh.index]
 st.table(veh[cols_existantes].to_frame(name="Valeur"))
 
-# ----------------- APERÇU IMAGES -----------------
-
 img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
 img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
 img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
 
 st.subheader("Images associées")
 col1, col2, col3 = st.columns(3)
-
 with col1:
     show_image(img_veh_path, "Image véhicule")
-
 with col2:
     show_image(img_client_path, "Image client")
-
 with col3:
     show_image(img_carbu_path, "Picto carburant")
-
-# ----------------- SYNTHÈSE COMPOSANTS (on garde) -----------------
 
 code_pf_ref = veh.get("Code_PF", "")
 
@@ -620,8 +596,6 @@ affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "CF_caisse", code_pf_f
 affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
 affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="P")
 affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-
-# ----------------- BOUTON FT -----------------
 
 st.markdown("---")
 st.subheader("Génération de la fiche technique")
@@ -646,4 +620,3 @@ if ft_file is not None:
     )
 else:
     st.info("Ajoute le modèle 'FT_Grand_Compte.xlsx' dans le repo pour activer le téléchargement.")
-
