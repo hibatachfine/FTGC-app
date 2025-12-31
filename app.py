@@ -451,15 +451,16 @@ def genere_ft_excel(
         "HAY_MAIN": 5,
         "HAY_OPT":  3,
     }
+
     def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
-    
-    extra = max(0, needed_rows - base_rows)
+        extra = max(0, needed_rows - base_rows)
     if extra > 0:
         start_col, start_row = anchors[start_anchor_key]
         insert_at = start_row + base_rows
         new_anchors = insert_rows_and_shift(anchors, insert_at, extra)
         anchors.clear()
         anchors.update(new_anchors)
+
 
 
     # ---- 1) TOP MAIN (CAB/MOT/CH) illimité ----
