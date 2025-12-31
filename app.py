@@ -451,7 +451,6 @@ def genere_ft_excel(
         "HAY_MAIN": 5,
         "HAY_OPT":  3,
     }
-
     def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
     
     extra = max(0, needed_rows - base_rows)
