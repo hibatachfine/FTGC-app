@@ -419,7 +419,7 @@ def genere_ft_excel(
     }
 
     def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
-    extra_rows = max(0, int(needed_rows) - int(base_rows))
+        extra_rows = max(0, int(needed_rows) - int(base_rows))
     if extra_rows <= 0:
         return
 
