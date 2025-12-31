@@ -9,6 +9,8 @@ from openpyxl.utils import column_index_from_string
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment
 
+APP_VERSION = "2025-12-31_no_extra_rows_v1"  # <- tu dois voir ça dans la sidebar
+
 
 # ----------------- CONFIG APP -----------------
 
@@ -20,6 +22,7 @@ st.set_page_config(
 
 st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
+st.sidebar.info(f"✅ App version: {APP_VERSION}")
 
 IMG_ROOT = "images"  # dossier racine des images dans le repo
 
@@ -44,11 +47,9 @@ def get_col(df: pd.DataFrame, wanted: str):
     for c in df.columns:
         if _norm(c) == w:
             return c
-
     for c in df.columns:
         if w in _norm(c):
             return c
-
     return None
 
 
@@ -61,10 +62,6 @@ def clean_unique_list(series: pd.Series):
 
 
 def extract_pf_key(code_pf: str):
-    """
-    Extrait une clé PF robuste :
-    ex: "35S14CF - 5 PAL - PASSION FROID" -> "35S14CF"
-    """
     if not isinstance(code_pf, str) or code_pf.strip() == "":
         return ""
     return code_pf.split(" - ")[0].strip()
@@ -73,13 +70,8 @@ def extract_pf_key(code_pf: str):
 # ----------------- IMAGES -----------------
 
 def resolve_image_path(cell_value, subdir):
-    """
-    Valeur Excel (chemin, nom fichier ou URL) -> chemin local /images/subdir/filename
-    IMPORTANT : gère les chemins Windows \\serveur\... en remplaçant \ par /
-    """
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
-
     val = cell_value.strip()
 
     if val.lower().startswith(("http://", "https://")):
@@ -112,7 +104,6 @@ def show_image(path_or_url, caption):
 @st.cache_data
 def load_data():
     xls = pd.ExcelFile("bdd_CG.xlsx")
-
     vehicules = pd.read_excel(xls, "FS_referentiel_produits_std_Ver")
     cabines = pd.read_excel(xls, "CABINES")
     moteurs = pd.read_excel(xls, "MOTEURS")
@@ -120,7 +111,6 @@ def load_data():
     caisses = pd.read_excel(xls, "CAISSES")
     frigo = pd.read_excel(xls, "FRIGO")
     hayons = pd.read_excel(xls, "HAYONS")
-
     return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
 
 
@@ -141,7 +131,6 @@ def filtre_select(df, col_wanted, label):
     return df, choix
 
 
-# identique à filtre_select (on garde le nom pour lisibilité)
 filtre_select_options = filtre_select
 
 
@@ -194,7 +183,7 @@ def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=No
     st.table(comp_row.to_frame(name="Valeur"))
 
 
-# ----------------- GENERATION FT (ILLIMITÉ + DÉCALAGE) -----------------
+# ----------------- GENERATION FT -----------------
 
 def genere_ft_excel(
     veh,
@@ -206,20 +195,14 @@ def genere_ft_excel(
     hay_prod_choice, hay_opt_choice,
 ):
     template_path = "FT_Grand_Compte.xlsx"
-
     if not os.path.exists(template_path):
         st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo.")
         return None
 
     wb = load_workbook(template_path, read_only=False, data_only=False)
+    ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
 
-    # feuille robuste
-    if "date" in wb.sheetnames:
-        ws = wb["date"]
-    else:
-        ws = wb[wb.sheetnames[0]]
-
-    # --- Excel helpers ---
+    # ---- helpers excel ----
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
         row_digits = "".join(ch for ch in cell_addr if ch.isdigit())
@@ -254,7 +237,7 @@ def genere_ft_excel(
             new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
         return new_anchors
 
-    # --- Data helpers ---
+    # ---- data helpers ----
     def build_values(row, code_col):
         if row is None:
             return []
@@ -313,7 +296,7 @@ def genere_ft_excel(
             opt_code = opt_choice
         return prod_code, opt_code
 
-    # ---- HEADER ----
+    # ---- header ----
     header_map = {
         "code_pays": "C5",
         "Marque": "C6",
@@ -329,7 +312,7 @@ def genere_ft_excel(
         if k in veh.index and pd.notna(veh.get(k)):
             ws[cell] = veh.get(k)
 
-    # ---- IMAGES ----
+    # ---- images ----
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
     img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
@@ -355,7 +338,7 @@ def genere_ft_excel(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ---- COMPOSANTS ----
+    # ---- composants ----
     global cabines, moteurs, chassis, caisses, frigo, hayons
     code_pf_ref = veh.get("Code_PF", "")
 
@@ -409,27 +392,21 @@ def genere_ft_excel(
     hay_vals = build_values(hay_prod_row, hay_codecol)
     hay_opt_vals = build_values(hay_opt_row, hay_codecol)
 
-    # ancres du template
     anchors = {
         "CAB_START": cell_to_rc("B18"),
         "MOT_START": cell_to_rc("F18"),
         "CH_START":  cell_to_rc("H18"),
-
         "CAB_OPT": cell_to_rc("B38"),
         "MOT_OPT": cell_to_rc("F38"),
         "CH_OPT":  cell_to_rc("H38"),
-
         "CAISSE_START": cell_to_rc("B40"),
         "CAISSE_OPT":   cell_to_rc("B47"),
-
         "GF_START": cell_to_rc("B50"),
         "GF_OPT":   cell_to_rc("B58"),
-
         "HAY_START": cell_to_rc("B61"),
         "HAY_OPT":   cell_to_rc("B68"),
     }
 
-    # hauteurs "de base" du modèle (zones existantes)
     BASE = {
         "TOP_MAIN": 17,
         "TOP_OPT":  3,
@@ -441,37 +418,29 @@ def genere_ft_excel(
         "HAY_OPT":  3,
     }
 
-    # ✅ ICI : extra est TOUJOURS défini et le if est DANS la fonction
-    def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
-        needed_rows = int(needed_rows)
-        base_rows = int(base_rows)
-
-        extra = max(0, needed_rows - base_rows)
-        if extra <= 0:
+    # ✅ Aucun "extra" dans tout le fichier
+    def ensure_space(anchor_key: str, base_rows: int, needed_rows: int):
+        extra_rows = max(0, int(needed_rows) - int(base_rows))
+        if extra_rows <= 0:
             return
-
-        start_col, start_row = anchors[start_anchor_key]
-        insert_at = start_row + base_rows
-
-        new_anchors = insert_rows_and_shift(anchors, insert_at, extra)
+        start_col, start_row = anchors[anchor_key]
+        insert_at = start_row + int(base_rows)
+        new_anchors = insert_rows_and_shift(anchors, insert_at, extra_rows)
         anchors.clear()
         anchors.update(new_anchors)
 
-    # ---- 1) TOP MAIN (CAB/MOT/CH) illimité ----
     top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
     ensure_space("CAB_START", BASE["TOP_MAIN"], top_needed)
     write_block_merged_safe(anchors["CAB_START"], cab_vals, top_needed)
     write_block_merged_safe(anchors["MOT_START"], mot_vals, top_needed)
     write_block_merged_safe(anchors["CH_START"],  ch_vals,  top_needed)
 
-    # ---- 2) TOP OPT illimité ----
     top_opt_needed = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1)
     ensure_space("CAB_OPT", BASE["TOP_OPT"], top_opt_needed)
     write_block_merged_safe(anchors["CAB_OPT"], cab_opt_vals, top_opt_needed)
     write_block_merged_safe(anchors["MOT_OPT"], mot_opt_vals, top_opt_needed)
     write_block_merged_safe(anchors["CH_OPT"],  ch_opt_vals,  top_opt_needed)
 
-    # ---- 3) CAISSE illimité ----
     caisse_needed = max(len(caisse_vals), 1)
     ensure_space("CAISSE_START", BASE["CAISSE_MAIN"], caisse_needed)
     write_block_merged_safe(anchors["CAISSE_START"], caisse_vals, caisse_needed)
@@ -480,7 +449,6 @@ def genere_ft_excel(
     ensure_space("CAISSE_OPT", BASE["CAISSE_OPT"], caisse_opt_needed)
     write_block_merged_safe(anchors["CAISSE_OPT"], caisse_opt_vals, caisse_opt_needed)
 
-    # ---- 4) FRIGO illimité ----
     gf_needed = max(len(gf_vals), 1)
     ensure_space("GF_START", BASE["GF_MAIN"], gf_needed)
     write_block_merged_safe(anchors["GF_START"], gf_vals, gf_needed)
@@ -489,7 +457,6 @@ def genere_ft_excel(
     ensure_space("GF_OPT", BASE["GF_OPT"], gf_opt_needed)
     write_block_merged_safe(anchors["GF_OPT"], gf_opt_vals, gf_opt_needed)
 
-    # ---- 5) HAYON illimité ----
     hay_needed = max(len(hay_vals), 1)
     ensure_space("HAY_START", BASE["HAY_MAIN"], hay_needed)
     write_block_merged_safe(anchors["HAY_START"], hay_vals, hay_needed)
@@ -498,7 +465,6 @@ def genere_ft_excel(
     ensure_space("HAY_OPT", BASE["HAY_OPT"], hay_opt_needed)
     write_block_merged_safe(anchors["HAY_OPT"], hay_opt_vals, hay_opt_needed)
 
-    # ---- DIMENSIONS ----
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
     ws["I6"]  = veh.get("L int \nutile \nsur plinthe")
     ws["I7"]  = veh.get("H int")
