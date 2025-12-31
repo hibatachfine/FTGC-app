@@ -12,15 +12,17 @@ from openpyxl.styles import Alignment
 # ----------------- CONFIG APP -----------------
 
 st.set_page_config(
+    page_title="FT Grand Compte",
     page_title="FT Grands Comptes",
     page_icon="🚚",
     layout="wide"
 )
 
+st.title("Generateur de Fiches Techniques Grand Compte")
 st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 
-IMG_ROOT = "images"
+IMG_ROOT = "images"  # dossier racine des images dans le repo
 
 
 # ----------------- HELPERS ROBUSTES -----------------
@@ -38,12 +40,15 @@ def get_col(df: pd.DataFrame, wanted: str):
     if df is None or wanted is None:
         return None
     w = _norm(wanted)
+
     for c in df.columns:
         if _norm(c) == w:
             return c
+
     for c in df.columns:
         if w in _norm(c):
             return c
+
     return None
 
 def clean_unique_list(series: pd.Series):
@@ -54,39 +59,58 @@ def clean_unique_list(series: pd.Series):
     return sorted(s.unique().tolist())
 
 def extract_pf_key(code_pf: str):
+    """
+    Extrait une clé PF robuste :
+    ex: "35S14CF - 5 PAL - PASSION FROID" -> "35S14CF"
+    """
     if not isinstance(code_pf, str) or code_pf.strip() == "":
         return ""
+    # prend le token avant le premier " - "
     return code_pf.split(" - ")[0].strip()
 
 
 # ----------------- FONCTIONS UTILES -----------------
 
 def resolve_image_path(cell_value, subdir):
+    """
+    Valeur Excel (chemin, nom fichier ou URL) -> chemin local /images/subdir/filename
+    IMPORTANT : gère les chemins Windows \\serveur\... en remplaçant \ par /
+    """
     if not isinstance(cell_value, str) or not cell_value.strip():
         return None
+
     val = cell_value.strip()
+
     if val.lower().startswith(("http://", "https://")):
         return val
+
+    # IMPORTANT : Linux basename ne coupe pas sur "\" -> on convertit en "/"
     val = val.replace("\\", "/")
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
 
+
 def show_image(path_or_url, caption):
     st.caption(caption)
+
     if not path_or_url:
         st.info("Pas d'image définie")
         return
+
     if isinstance(path_or_url, str) and path_or_url.lower().startswith(("http://", "https://")):
         st.image(path_or_url)
         return
+
     if os.path.exists(path_or_url):
         st.image(path_or_url)
     else:
         st.warning(f"Image introuvable : {path_or_url}")
 
+
 @st.cache_data
 def load_data():
     xls = pd.ExcelFile("bdd_CG.xlsx")
+
     vehicules = pd.read_excel(xls, "FS_referentiel_produits_std_Ver")
     cabines = pd.read_excel(xls, "CABINES")
     moteurs = pd.read_excel(xls, "MOTEURS")
@@ -94,29 +118,39 @@ def load_data():
     caisses = pd.read_excel(xls, "CAISSES")
     frigo = pd.read_excel(xls, "FRIGO")
     hayons = pd.read_excel(xls, "HAYONS")
+
     return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
+
 
 def filtre_select(df, col_wanted, label):
     col = get_col(df, col_wanted)
     if col is None:
         st.sidebar.write(f"(colonne '{col_wanted}' absente)")
         return df, None
+
     options = clean_unique_list(df[col])
     choix = st.sidebar.selectbox(label, ["Tous"] + options)
+
     if choix != "Tous":
         df = df[df[col].astype(str).str.strip() == str(choix).strip()]
+
     return df, choix
+
 
 def filtre_select_options(df, col_wanted, label):
     col = get_col(df, col_wanted)
     if col is None:
         st.sidebar.write(f"(colonne '{col_wanted}' absente)")
         return df, None
+
     options = clean_unique_list(df[col])
     choix = st.sidebar.selectbox(label, ["Tous"] + options)
+
     if choix != "Tous":
         df = df[df[col].astype(str).str.strip() == str(choix).strip()]
+
     return df, choix
+
 
 def format_vehicule(row):
     champs = []
@@ -126,7 +160,55 @@ def format_vehicule(row):
     return " – ".join(champs)
 
 
-# ----------------- GENERATION FT (décalage + merged OK) -----------------
+def affiche_composant(titre, code, df_ref, col_code_ref, code_pf_for_fallback=None, prefer_po=None):
+    """
+    Affichage Streamlit (inchangé visuellement) mais recherche robuste :
+    - match exact sur code
+    - sinon fallback sur Code_PF (clé) dans la colonne code du sheet
+    - prefer_po : 'P' ou 'O' si colonne Produit/Option existe
+    """
+    st.markdown("---")
+    st.subheader(titre)
+
+    if pd.isna(code) or str(code).strip() == "":
+        st.info("Aucun code renseigné pour ce composant.")
+        return
+
+    st.write(f"Code composant : **{code}**")
+
+    code_col = get_col(df_ref, col_code_ref) or df_ref.columns[0]
+    code_str = str(code).strip()
+
+    # colonne Produit/Option si existe
+    po_col = None
+    for c in df_ref.columns:
+        if "produit" in _norm(c) and "option" in _norm(c):
+            po_col = c
+            break
+
+    # 1) match exact
+    comp = df_ref[df_ref[code_col].astype(str).str.strip() == code_str]
+
+    # 2) fallback sur code_pf
+    if comp.empty and isinstance(code_pf_for_fallback, str) and code_pf_for_fallback.strip():
+        key = extract_pf_key(code_pf_for_fallback)
+        if key:
+            cand = df_ref[df_ref[code_col].astype(str).str.contains(re.escape(key), na=False)]
+            if prefer_po and po_col and not cand.empty:
+                cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
+                comp = cand_po if not cand_po.empty else cand
+            else:
+                comp = cand
+
+    if comp.empty:
+        st.warning("Code non trouvé dans la base de référence.")
+        return
+
+    comp_row = comp.iloc[0].dropna()
+    st.table(comp_row.to_frame(name="Valeur"))
+
+
+# ----------------- GENERATION FT -----------------
 
 def genere_ft_excel(
     veh,
@@ -138,27 +220,13 @@ def genere_ft_excel(
     hay_prod_choice, hay_opt_choice,
 ):
     template_path = "FT_Grand_Compte.xlsx"
+
     if not os.path.exists(template_path):
         st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo.")
         return None
 
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"]
-
-    HARD_CAP = 400  # sécurité
-
-    def cell_to_rc(cell_addr: str):
-        col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
-        row_digits = "".join(ch for ch in cell_addr if ch.isdigit())
-        return column_index_from_string(col_letters), int(row_digits)
-
-    def rc_to_cell(col_idx: int, row_idx: int):
-        letters = ""
-        n = col_idx
-        while n > 0:
-            n, r = divmod(n - 1, 26)
-            letters = chr(65 + r) + letters
-        return f"{letters}{row_idx}"
 
     def build_values(row, code_col):
         if row is None:
@@ -177,84 +245,38 @@ def genere_ft_excel(
             vals.append(str(val).strip())
         return vals
 
-    # ---- merged helpers (FIX) ----
+    def write_block(start_cell, values, max_rows):
+        col_letters = "".join(ch for ch in start_cell if ch.isalpha())
+        row_digits = "".join(ch for ch in start_cell if ch.isdigit())
+        start_col = column_index_from_string(col_letters)
+        start_row = int(row_digits)
 
-    def merged_range_obj_for_cell(r, c):
-        """Retourne l'objet merge range si (r,c) est dans une fusion, sinon None."""
-        for rng in ws.merged_cells.ranges:
-            if rng.min_row <= r <= rng.max_row and rng.min_col <= c <= rng.max_col:
-                return rng
-        return None
-
-    def set_value_safe(r, c, value):
-        """
-        Écrit même si MergedCell :
-        - trouve la fusion
-        - unmerge temporairement
-        - écrit
-        - remmerge
-        """
-        cell = ws.cell(row=r, column=c)
-
-        # cell normale
-        if not isinstance(cell, MergedCell):
-            cell.value = value
-            return
-
-        rng = merged_range_obj_for_cell(r, c)
-        if rng is None:
-            # fallback (ne rien faire plutôt que planter)
-            return
-
-        coord = str(rng)  # ex "B38:D40"
-        r0, c0 = rng.min_row, rng.min_col
-
-        # unmerge -> write -> merge (évite AttributeError)
-        ws.unmerge_cells(coord)
-        tl = ws.cell(row=r0, column=c0)
-        tl.value = value
-        tl.alignment = Alignment(wrap_text=True, vertical="top")
-        ws.merge_cells(coord)
-
-    def write_block_smart(start_cell, values, n_rows):
-        """
-        Si la cellule de départ est dans une fusion => on écrit tout dans la top-left avec \\n
-        sinon => ligne par ligne
-        """
-        start_col, start_row = cell_to_rc(start_cell)
-        rng = merged_range_obj_for_cell(start_row, start_col)
-
-        if rng is not None:
-            # Une seule cellule fusionnée : on met tout dedans (sinon tu perds des lignes)
-            text = "\n".join(values[:HARD_CAP])
-            set_value_safe(start_row, start_col, text)
-            return
-
-        for i in range(n_rows):
-            v = values[i] if i < len(values) else None
-            set_value_safe(start_row + i, start_col, v)
-
-    def insert_rows_and_shift(anchors: dict, insert_at_row: int, n: int):
-        if n <= 0:
-            return anchors
-        ws.insert_rows(insert_at_row, n)
-        new_anchors = {}
-        for k, (c, r) in anchors.items():
-            new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
-        return new_anchors
+        for i in range(max_rows):
+            cell = ws.cell(row=start_row + i, column=start_col)
+            if isinstance(cell, MergedCell):
+                continue
+            cell.value = values[i] if i < len(values) else None
 
     def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
+        """
+        Recherche robuste :
+        1) match exact du code (si existe)
+        2) sinon fallback : cherche une ligne dont le code contient la clé Code_PF
+        3) prefer_po : 'P' ou 'O' si colonne Produit/Option présente
+        """
         if not isinstance(code, str) or code.strip() == "" or code == "Tous":
             code = ""
 
         code_col = get_col(df, code_col_wanted) or df.columns[0]
 
+        # colonne Produit/Option si existe
         po_col = None
-        for col in df.columns:
-            if "produit" in _norm(col) and "option" in _norm(col):
-                po_col = col
+        for c in df.columns:
+            if "produit" in _norm(c) and "option" in _norm(c):
+                po_col = c
                 break
 
+        # 1) exact
         if code:
             cand = df[df[code_col].astype(str).str.strip() == code.strip()]
             if not cand.empty:
@@ -263,6 +285,7 @@ def genere_ft_excel(
                     return cand_po.iloc[0] if not cand_po.empty else cand.iloc[0]
                 return cand.iloc[0]
 
+        # 2) fallback Code_PF
         if isinstance(code_pf_fallback, str) and code_pf_fallback.strip():
             key = extract_pf_key(code_pf_fallback)
             if key:
@@ -328,6 +351,7 @@ def genere_ft_excel(
 
     # ---- COMPOSANTS ----
     global cabines, moteurs, chassis, caisses, frigo, hayons
+
     code_pf_ref = veh.get("Code_PF", "")
 
     cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
@@ -337,143 +361,47 @@ def genere_ft_excel(
     gf_prod_code, gf_opt_code = choose_codes(gf_prod_choice, gf_opt_choice, veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS"))
     hay_prod_code, hay_opt_code = choose_codes(hay_prod_choice, hay_opt_choice, veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS"))
 
+    # CABINE (Produit -> zone principale / Option -> zone options)
     cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="P")
     cab_opt_row  = find_row(cabines, cab_opt_code,  "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="O")
+    cab_codecol = get_col(cabines, "C_Cabine") or cabines.columns[0]
+    write_block("B18", build_values(cab_prod_row, cab_codecol), 17)
+    write_block("B38", build_values(cab_opt_row,  cab_codecol), 3)
 
+    # MOTEUR
     mot_prod_row = find_row(moteurs, mot_prod_code, "M_moteur", code_pf_fallback=code_pf_ref, prefer_po="P")
     mot_opt_row  = find_row(moteurs, mot_opt_code,  "M_moteur", code_pf_fallback=code_pf_ref, prefer_po="O")
+    mot_codecol = get_col(moteurs, "M_moteur") or moteurs.columns[0]
+    write_block("F18", build_values(mot_prod_row, mot_codecol), 17)
+    write_block("F38", build_values(mot_opt_row,  mot_codecol), 3)
 
-    ch_prod_row  = find_row(chassis, ch_prod_code, "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="P")
-    ch_opt_row   = find_row(chassis, ch_opt_code,  "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="O")
+    # CHASSIS
+    ch_prod_row = find_row(chassis, ch_prod_code, "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="P")
+    ch_opt_row  = find_row(chassis, ch_opt_code,  "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="O")
+    ch_codecol = get_col(chassis, "CH_chassis") or chassis.columns[0]
+    write_block("H18", build_values(ch_prod_row, ch_codecol), 17)
+    write_block("H38", build_values(ch_opt_row,  ch_codecol), 3)
 
+    # CAISSE
     caisse_prod_row = find_row(caisses, caisse_prod_code, "CF_caisse", code_pf_fallback=code_pf_ref, prefer_po="P")
     caisse_opt_row  = find_row(caisses, caisse_opt_code,  "CF_caisse", code_pf_fallback=code_pf_ref, prefer_po="O")
+    caisse_codecol = get_col(caisses, "CF_caisse") or caisses.columns[0]
+    write_block("B40", build_values(caisse_prod_row, caisse_codecol), 5)
+    write_block("B47", build_values(caisse_opt_row,  caisse_codecol), 2)
 
+    # FRIGO
     gf_prod_row = find_row(frigo, gf_prod_code, "GF_groupe frigo", code_pf_fallback=code_pf_ref, prefer_po="P")
     gf_opt_row  = find_row(frigo, gf_opt_code,  "GF_groupe frigo", code_pf_fallback=code_pf_ref, prefer_po="O")
+    gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
+    write_block("B50", build_values(gf_prod_row, gf_codecol), 6)
+    write_block("B58", build_values(gf_opt_row,  gf_codecol), 2)
 
+    # HAYON
     hay_prod_row = find_row(hayons, hay_prod_code, "HL_hayon elevateur", code_pf_fallback=code_pf_ref, prefer_po="P")
     hay_opt_row  = find_row(hayons, hay_opt_code,  "HL_hayon elevateur", code_pf_fallback=code_pf_ref, prefer_po="O")
-
-    cab_codecol = get_col(cabines, "C_Cabine") or cabines.columns[0]
-    mot_codecol = get_col(moteurs, "M_moteur") or moteurs.columns[0]
-    ch_codecol  = get_col(chassis, "CH_chassis") or chassis.columns[0]
-    caisse_codecol = get_col(caisses, "CF_caisse") or caisses.columns[0]
-    gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
     hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
-
-    cab_vals = build_values(cab_prod_row, cab_codecol)[:HARD_CAP]
-    mot_vals = build_values(mot_prod_row, mot_codecol)[:HARD_CAP]
-    ch_vals  = build_values(ch_prod_row,  ch_codecol)[:HARD_CAP]
-
-    cab_opt_vals = build_values(cab_opt_row, cab_codecol)[:HARD_CAP]
-    mot_opt_vals = build_values(mot_opt_row, mot_codecol)[:HARD_CAP]
-    ch_opt_vals  = build_values(ch_opt_row,  ch_codecol)[:HARD_CAP]
-
-    caisse_vals = build_values(caisse_prod_row, caisse_codecol)[:HARD_CAP]
-    caisse_opt_vals = build_values(caisse_opt_row, caisse_codecol)[:HARD_CAP]
-
-    gf_vals = build_values(gf_prod_row, gf_codecol)[:HARD_CAP]
-    gf_opt_vals = build_values(gf_opt_row, gf_codecol)[:HARD_CAP]
-
-    hay_vals = build_values(hay_prod_row, hay_codecol)[:HARD_CAP]
-    hay_opt_vals = build_values(hay_opt_row, hay_codecol)[:HARD_CAP]
-
-    anchors = {
-        "CAB_START": cell_to_rc("B18"),
-        "MOT_START": cell_to_rc("F18"),
-        "CH_START":  cell_to_rc("H18"),
-
-        "CAB_OPT": cell_to_rc("B38"),
-        "MOT_OPT": cell_to_rc("F38"),
-        "CH_OPT":  cell_to_rc("H38"),
-
-        "CAISSE_START": cell_to_rc("B40"),
-        "CAISSE_OPT":   cell_to_rc("B47"),
-
-        "GF_START": cell_to_rc("B50"),
-        "GF_OPT":   cell_to_rc("B58"),
-
-        "HAY_START": cell_to_rc("B61"),
-        "HAY_OPT":   cell_to_rc("B68"),
-    }
-
-    # Décalage + écriture (les merges sont safe maintenant)
-    TOP_DEFAULT = 17
-    top_target = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
-    extra_top = max(0, top_target - TOP_DEFAULT)
-    if extra_top > 0:
-        insert_at = anchors["CAB_START"][1] + TOP_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_top)
-
-    write_block_smart(rc_to_cell(*anchors["CAB_START"]), cab_vals, top_target)
-    write_block_smart(rc_to_cell(*anchors["MOT_START"]), mot_vals, top_target)
-    write_block_smart(rc_to_cell(*anchors["CH_START"]),  ch_vals,  top_target)
-
-    OPT_DEFAULT = 3
-    opt_target = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1)
-    extra_opt = max(0, opt_target - OPT_DEFAULT)
-    if extra_opt > 0:
-        insert_at = anchors["CAB_OPT"][1] + OPT_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_opt)
-
-    write_block_smart(rc_to_cell(*anchors["CAB_OPT"]), cab_opt_vals, opt_target)
-    write_block_smart(rc_to_cell(*anchors["MOT_OPT"]), mot_opt_vals, opt_target)
-    write_block_smart(rc_to_cell(*anchors["CH_OPT"]),  ch_opt_vals,  opt_target)
-
-    CAISSE_DEFAULT = 5
-    caisse_target = max(len(caisse_vals), 1)
-    extra_caisse = max(0, caisse_target - CAISSE_DEFAULT)
-    if extra_caisse > 0:
-        insert_at = anchors["CAISSE_START"][1] + CAISSE_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_caisse)
-
-    write_block_smart(rc_to_cell(*anchors["CAISSE_START"]), caisse_vals, caisse_target)
-
-    CAISSE_OPT_DEFAULT = 2
-    caisse_opt_target = max(len(caisse_opt_vals), 1)
-    extra_caisse_opt = max(0, caisse_opt_target - CAISSE_OPT_DEFAULT)
-    if extra_caisse_opt > 0:
-        insert_at = anchors["CAISSE_OPT"][1] + CAISSE_OPT_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_caisse_opt)
-
-    write_block_smart(rc_to_cell(*anchors["CAISSE_OPT"]), caisse_opt_vals, caisse_opt_target)
-
-    GF_DEFAULT = 6
-    gf_target = max(len(gf_vals), 1)
-    extra_gf = max(0, gf_target - GF_DEFAULT)
-    if extra_gf > 0:
-        insert_at = anchors["GF_START"][1] + GF_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_gf)
-
-    write_block_smart(rc_to_cell(*anchors["GF_START"]), gf_vals, gf_target)
-
-    GF_OPT_DEFAULT = 2
-    gf_opt_target = max(len(gf_opt_vals), 1)
-    extra_gf_opt = max(0, gf_opt_target - GF_OPT_DEFAULT)
-    if extra_gf_opt > 0:
-        insert_at = anchors["GF_OPT"][1] + GF_OPT_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_gf_opt)
-
-    write_block_smart(rc_to_cell(*anchors["GF_OPT"]), gf_opt_vals, gf_opt_target)
-
-    HAY_DEFAULT = 5
-    hay_target = max(len(hay_vals), 1)
-    extra_hay = max(0, hay_target - HAY_DEFAULT)
-    if extra_hay > 0:
-        insert_at = anchors["HAY_START"][1] + HAY_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_hay)
-
-    write_block_smart(rc_to_cell(*anchors["HAY_START"]), hay_vals, hay_target)
-
-    HAY_OPT_DEFAULT = 3
-    hay_opt_target = max(len(hay_opt_vals), 1)
-    extra_hay_opt = max(0, hay_opt_target - HAY_OPT_DEFAULT)
-    if extra_hay_opt > 0:
-        insert_at = anchors["HAY_OPT"][1] + HAY_OPT_DEFAULT
-        anchors = insert_rows_and_shift(anchors, insert_at, extra_hay_opt)
-
-    write_block_smart(rc_to_cell(*anchors["HAY_OPT"]), hay_opt_vals, hay_opt_target)
+    write_block("B61", build_values(hay_prod_row, hay_codecol), 5)
+    write_block("B68", build_values(hay_opt_row,  hay_codecol), 3)
 
     # ---- DIMENSIONS ----
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
@@ -498,12 +426,12 @@ def genere_ft_excel(
     return output
 
 
-# ----------------- CHARGEMENT -----------------
+# ----------------- CHARGEMENT DES DONNÉES -----------------
 
 vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
 
 
-# ----------------- FILTRES -----------------
+# ----------------- SIDEBAR : FILTRES -----------------
 
 st.sidebar.header("Filtres véhicule")
 
@@ -515,6 +443,7 @@ df_filtre, modele = filtre_select(df_filtre, "Modele", "Modèle")
 df_filtre, code_pf = filtre_select(df_filtre, "Code_PF", "Code PF")
 df_filtre, std_pf = filtre_select(df_filtre, "Standard_PF", "Standard PF")
 
+# composants (produit + options)
 df_filtre, cab_prod_choice = filtre_select(df_filtre, "C_Cabine", "Cabine - code produit")
 df_filtre, cab_opt_choice  = filtre_select_options(df_filtre, "C_Cabine-OPTIONS", "Cabine - code options")
 
@@ -540,12 +469,15 @@ if df_filtre.empty:
     st.warning("Aucun véhicule ne correspond aux filtres sélectionnés.")
     st.stop()
 
+# ----------------- CHOIX D'UNE LIGNE -----------------
+
 indices = list(df_filtre.index)
 choix_idx = st.selectbox(
     "Sélectionne le véhicule pour générer la FT :",
     indices,
     format_func=lambda i: format_vehicule(df_filtre.loc[i]),
 )
+
 veh = df_filtre.loc[choix_idx]
 
 st.markdown("---")
@@ -558,14 +490,35 @@ cols_synthese = [
 cols_existantes = [c for c in cols_synthese if c in veh.index]
 st.table(veh[cols_existantes].to_frame(name="Valeur"))
 
+# ----------------- APERÇU IMAGES -----------------
+
+img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
+img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
+img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
+
 st.subheader("Images associées")
 col1, col2, col3 = st.columns(3)
+
 with col1:
-    show_image(resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule"), "Image véhicule")
+    show_image(img_veh_path, "Image véhicule")
 with col2:
-    show_image(resolve_image_path(veh.get("Image Client"), "Image Client"), "Image client")
+    show_image(img_client_path, "Image client")
 with col3:
-    show_image(resolve_image_path(veh.get("Image Carburant"), "Image Carburant"), "Picto carburant")
+    show_image(img_carbu_path, "Picto carburant")
+
+# ----------------- DETAIL COMPOSANTS (streamlit) -----------------
+# => fallback Code_PF (la même logique que la FT)
+
+code_pf_ref = veh.get("Code_PF", "")
+
+affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Châssis", veh.get("C_Chassis"), chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Caisse", veh.get("C_Caisse"), caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Moteur", veh.get("M_moteur"), moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Groupe frigorifique", veh.get("C_Groupe frigo"), frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Hayon élévateur", veh.get("C_Hayon elevateur"), hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+
+# ----------------- BOUTON FT -----------------
 
 st.markdown("---")
 st.subheader("Génération de la fiche technique")
