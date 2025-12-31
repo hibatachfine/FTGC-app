@@ -141,7 +141,7 @@ def filtre_select(df, col_wanted, label):
     return df, choix
 
 
-# identique à filtre_select (tu peux garder 2 noms si tu veux)
+# identique à filtre_select (on garde le nom pour lisibilité)
 filtre_select_options = filtre_select
 
 
@@ -441,10 +441,13 @@ def genere_ft_excel(
         "HAY_OPT":  3,
     }
 
-    # ✅ CORRECTION : extra est DEFINI et UTILISÉ uniquement ICI (pas de "if extra > 0" perdu)
+    # ✅ ICI : extra est TOUJOURS défini et le if est DANS la fonction
     def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
-        extra = max(0, int(needed_rows) - int(base_rows))
-        if extra == 0:
+        needed_rows = int(needed_rows)
+        base_rows = int(base_rows)
+
+        extra = max(0, needed_rows - base_rows)
+        if extra <= 0:
             return
 
         start_col, start_row = anchors[start_anchor_key]
