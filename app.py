@@ -35,6 +35,7 @@ def _norm(s: str) -> str:
     s = " ".join(s.split())
     return s
 
+
 def get_col(df: pd.DataFrame, wanted: str):
     if df is None or wanted is None:
         return None
@@ -50,12 +51,14 @@ def get_col(df: pd.DataFrame, wanted: str):
 
     return None
 
+
 def clean_unique_list(series: pd.Series):
     if series is None:
         return []
     s = series.dropna().astype(str).map(lambda x: x.strip())
     s = s[(s != "") & (s.str.lower() != "nan")]
     return sorted(s.unique().tolist())
+
 
 def extract_pf_key(code_pf: str):
     """
@@ -85,6 +88,7 @@ def resolve_image_path(cell_value, subdir):
     val = val.replace("\\", "/")
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
+
 
 def show_image(path_or_url, caption):
     st.caption(caption)
@@ -136,19 +140,9 @@ def filtre_select(df, col_wanted, label):
 
     return df, choix
 
-def filtre_select_options(df, col_wanted, label):
-    col = get_col(df, col_wanted)
-    if col is None:
-        st.sidebar.write(f"(colonne '{col_wanted}' absente)")
-        return df, None
 
-    options = clean_unique_list(df[col])
-    choix = st.sidebar.selectbox(label, ["Tous"] + options)
-
-    if choix != "Tous":
-        df = df[df[col].astype(str).str.strip() == str(choix).strip()]
-
-    return df, choix
+# identique à filtre_select (tu peux garder 2 noms si tu veux)
+filtre_select_options = filtre_select
 
 
 def format_vehicule(row):
@@ -218,7 +212,12 @@ def genere_ft_excel(
         return None
 
     wb = load_workbook(template_path, read_only=False, data_only=False)
-    ws = wb["date"]
+
+    # feuille robuste
+    if "date" in wb.sheetnames:
+        ws = wb["date"]
+    else:
+        ws = wb[wb.sheetnames[0]]
 
     # --- Excel helpers ---
     def cell_to_rc(cell_addr: str):
@@ -246,12 +245,12 @@ def genere_ft_excel(
             v = values[i] if i < len(values) else None
             set_cell_value_merged_safe(start_row + i, start_col, v)
 
-    def insert_rows_and_shift(anchors: dict, insert_at_row: int, n: int):
+    def insert_rows_and_shift(anchors_dict: dict, insert_at_row: int, n: int):
         if n <= 0:
-            return anchors
+            return anchors_dict
         ws.insert_rows(insert_at_row, n)
         new_anchors = {}
-        for k, (c, r) in anchors.items():
+        for k, (c, r) in anchors_dict.items():
             new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
         return new_anchors
 
@@ -266,7 +265,6 @@ def genere_ft_excel(
             if pd.isna(val) or str(val).strip() == "":
                 continue
             name_lower = _norm(col)
-            # enlève les colonnes techniques / titres
             if ("produit" in name_lower and "option" in name_lower) or name_lower.startswith("zone libre"):
                 continue
             if str(col).strip() == "_":
@@ -433,8 +431,8 @@ def genere_ft_excel(
 
     # hauteurs "de base" du modèle (zones existantes)
     BASE = {
-        "TOP_MAIN": 17,      # CAB/MOT/CH
-        "TOP_OPT":  3,       # options CAB/MOT/CH
+        "TOP_MAIN": 17,
+        "TOP_OPT":  3,
         "CAISSE_MAIN": 5,
         "CAISSE_OPT":  2,
         "GF_MAIN": 6,
@@ -443,12 +441,15 @@ def genere_ft_excel(
         "HAY_OPT":  3,
     }
 
+    # ✅ CORRECTION : extra est DEFINI et UTILISÉ uniquement ICI (pas de "if extra > 0" perdu)
     def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
-        extra = max(0, needed_rows - base_rows)
-        if extra <= 0:
+        extra = max(0, int(needed_rows) - int(base_rows))
+        if extra == 0:
             return
+
         start_col, start_row = anchors[start_anchor_key]
         insert_at = start_row + base_rows
+
         new_anchors = insert_rows_and_shift(anchors, insert_at, extra)
         anchors.clear()
         anchors.update(new_anchors)
@@ -456,7 +457,6 @@ def genere_ft_excel(
     # ---- 1) TOP MAIN (CAB/MOT/CH) illimité ----
     top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
     ensure_space("CAB_START", BASE["TOP_MAIN"], top_needed)
-
     write_block_merged_safe(anchors["CAB_START"], cab_vals, top_needed)
     write_block_merged_safe(anchors["MOT_START"], mot_vals, top_needed)
     write_block_merged_safe(anchors["CH_START"],  ch_vals,  top_needed)
@@ -464,7 +464,6 @@ def genere_ft_excel(
     # ---- 2) TOP OPT illimité ----
     top_opt_needed = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1)
     ensure_space("CAB_OPT", BASE["TOP_OPT"], top_opt_needed)
-
     write_block_merged_safe(anchors["CAB_OPT"], cab_opt_vals, top_opt_needed)
     write_block_merged_safe(anchors["MOT_OPT"], mot_opt_vals, top_opt_needed)
     write_block_merged_safe(anchors["CH_OPT"],  ch_opt_vals,  top_opt_needed)
