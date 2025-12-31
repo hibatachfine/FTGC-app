@@ -453,10 +453,7 @@ def genere_ft_excel(
     }
 
     def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
-    """
-    Insère des lignes si needed_rows > base_rows juste après le bloc,
-    et décale toutes les ancres en dessous.
-    """
+    
     extra = max(0, needed_rows - base_rows)
     if extra > 0:
         start_col, start_row = anchors[start_anchor_key]
