@@ -418,16 +418,18 @@ def genere_ft_excel(
         "HAY_OPT":  3,
     }
 
-    # ✅ Aucun "extra" dans tout le fichier
-    def ensure_space(anchor_key: str, base_rows: int, needed_rows: int):
-        extra_rows = max(0, int(needed_rows) - int(base_rows))
-        if extra_rows <= 0:
-            return
-        start_col, start_row = anchors[anchor_key]
-        insert_at = start_row + int(base_rows)
-        new_anchors = insert_rows_and_shift(anchors, insert_at, extra_rows)
-        anchors.clear()
-        anchors.update(new_anchors)
+    def ensure_space(start_anchor_key: str, base_rows: int, needed_rows: int):
+    extra_rows = max(0, int(needed_rows) - int(base_rows))
+    if extra_rows <= 0:
+        return
+
+    start_col, start_row = anchors[start_anchor_key]
+    insert_at = start_row + int(base_rows)
+
+    new_anchors = insert_rows_and_shift(anchors, insert_at, extra_rows)
+    anchors.clear()
+    anchors.update(new_anchors)
+
 
     top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
     ensure_space("CAB_START", BASE["TOP_MAIN"], top_needed)
