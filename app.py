@@ -3,14 +3,14 @@ import pandas as pd
 import os
 import re
 from io import BytesIO
+from copy import copy
 
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
 from openpyxl.cell.cell import MergedCell
-from openpyxl.styles import Alignment
 
-APP_VERSION = "2026-01-05_fix_extra_rows_full_app"
+APP_VERSION = "2026-01-05_fix_insert_rows_keep_layout_fullwidth"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -200,7 +200,6 @@ def genere_ft_excel(
 
     wb = load_workbook(template_path, read_only=False, data_only=False)
 
-    # feuille cible robuste
     if "date" in wb.sheetnames:
         ws = wb["date"]
     elif "data" in wb.sheetnames:
@@ -208,7 +207,7 @@ def genere_ft_excel(
     else:
         ws = wb[wb.sheetnames[0]]
 
-    # --- excel helpers ---
+    # ---------- Excel helpers ----------
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
         row_digits = "".join(ch for ch in cell_addr if ch.isdigit())
@@ -226,7 +225,15 @@ def genere_ft_excel(
         if isinstance(cell, MergedCell):
             return
         cell.value = value
-        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        # On garde la police/mise en page du template (déjà copiée).
+        # Juste on force le wrap pour éviter de couper le texte.
+        try:
+            al = copy(cell.alignment)
+            al.wrap_text = True
+            cell.alignment = al
+        except Exception:
+            pass
 
     def write_block_merged_safe(start_rc, values, n_rows):
         start_col, start_row = start_rc
@@ -234,16 +241,75 @@ def genere_ft_excel(
             v = values[i] if i < len(values) else None
             set_cell_value_merged_safe(start_row + i, start_col, v)
 
-    def insert_rows_and_shift(anchors_dict: dict, insert_at_row: int, n: int):
+    def insert_rows_and_shift_keep_layout(
+        anchors_dict: dict,
+        insert_at_row: int,
+        n: int,
+        template_row: int,
+        max_col_letter: str = "L",
+    ):
+        """
+        Insert rows and replicate EXACT template layout (styles + merges + row height)
+        so new lines look identical and text spans full width.
+        """
         if n <= 0:
             return anchors_dict
+
+        max_col = column_index_from_string(max_col_letter)
+
+        # 1) Insert rows
         ws.insert_rows(insert_at_row, n)
+
+        # 2) Shift page breaks (avoid weird blank pages)
+        try:
+            for br in ws.row_breaks.brk:
+                if br.id >= insert_at_row:
+                    br.id += n
+        except Exception:
+            pass
+
+        # 3) Capture horizontal merges on template row (single-row merges)
+        merges_to_clone = []
+        for rng in list(ws.merged_cells.ranges):
+            if rng.min_row == template_row and rng.max_row == template_row:
+                merges_to_clone.append((rng.min_col, rng.max_col))
+
+        # 4) Row height
+        base_height = ws.row_dimensions[template_row].height
+
+        # 5) For each new row: copy styles + row height + merges
+        for i in range(n):
+            new_r = insert_at_row + i
+
+            if base_height is not None:
+                ws.row_dimensions[new_r].height = base_height
+
+            for c in range(1, max_col + 1):
+                src = ws.cell(row=template_row, column=c)
+                dst = ws.cell(row=new_r, column=c)
+
+                if src.has_style:
+                    dst._style = copy(src._style)
+                    dst.font = copy(src.font)
+                    dst.fill = copy(src.fill)
+                    dst.border = copy(src.border)
+                    dst.number_format = src.number_format
+                    dst.protection = copy(src.protection)
+                    dst.alignment = copy(src.alignment)
+
+            for (c1, c2) in merges_to_clone:
+                try:
+                    ws.merge_cells(start_row=new_r, start_column=c1, end_row=new_r, end_column=c2)
+                except Exception:
+                    pass
+
+        # 6) Update anchors
         new_anchors = {}
         for k, (c, r) in anchors_dict.items():
             new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
         return new_anchors
 
-    # --- data helpers ---
+    # ---------- Data helpers ----------
     def build_values(row, code_col):
         if row is None:
             return []
@@ -414,52 +480,61 @@ def genere_ft_excel(
         "HAY_OPT":  3,
     }
 
-    # ✅ ICI: extra_rows est local et ne fuit pas → plus de NameError possible
-    def ensure_space(anchor_key: str, base_rows: int, needed_rows: int):
+    def ensure_space(anchor_key: str, base_rows: int, needed_rows: int, max_col_letter: str = "L"):
         extra_rows = max(0, int(needed_rows) - int(base_rows))
         if extra_rows <= 0:
             return
         start_col, start_row = anchors[anchor_key]
         insert_at = start_row + int(base_rows)
-        new_anchors = insert_rows_and_shift(anchors, insert_at, extra_rows)
+
+        # ✅ IMPORTANT : la dernière ligne du bloc (déjà bien formatée) sert de "modèle"
+        template_row = insert_at - 1
+
+        new_anchors = insert_rows_and_shift_keep_layout(
+            anchors_dict=anchors,
+            insert_at_row=insert_at,
+            n=extra_rows,
+            template_row=template_row,
+            max_col_letter=max_col_letter,
+        )
         anchors.clear()
         anchors.update(new_anchors)
 
     # ---- WRITE BLOCKS ----
     top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
-    ensure_space("CAB_START", BASE["TOP_MAIN"], top_needed)
+    ensure_space("CAB_START", BASE["TOP_MAIN"], top_needed, max_col_letter="L")
     write_block_merged_safe(anchors["CAB_START"], cab_vals, top_needed)
     write_block_merged_safe(anchors["MOT_START"], mot_vals, top_needed)
-    write_block_merged_safe(anchors["CH_START"], ch_vals, top_needed)
+    write_block_merged_safe(anchors["CH_START"],  ch_vals,  top_needed)
 
     top_opt_needed = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1)
-    ensure_space("CAB_OPT", BASE["TOP_OPT"], top_opt_needed)
+    ensure_space("CAB_OPT", BASE["TOP_OPT"], top_opt_needed, max_col_letter="L")
     write_block_merged_safe(anchors["CAB_OPT"], cab_opt_vals, top_opt_needed)
     write_block_merged_safe(anchors["MOT_OPT"], mot_opt_vals, top_opt_needed)
-    write_block_merged_safe(anchors["CH_OPT"], ch_opt_vals, top_opt_needed)
+    write_block_merged_safe(anchors["CH_OPT"],  ch_opt_vals,  top_opt_needed)
 
     caisse_needed = max(len(caisse_vals), 1)
-    ensure_space("CAISSE_START", BASE["CAISSE_MAIN"], caisse_needed)
+    ensure_space("CAISSE_START", BASE["CAISSE_MAIN"], caisse_needed, max_col_letter="L")
     write_block_merged_safe(anchors["CAISSE_START"], caisse_vals, caisse_needed)
 
     caisse_opt_needed = max(len(caisse_opt_vals), 1)
-    ensure_space("CAISSE_OPT", BASE["CAISSE_OPT"], caisse_opt_needed)
+    ensure_space("CAISSE_OPT", BASE["CAISSE_OPT"], caisse_opt_needed, max_col_letter="L")
     write_block_merged_safe(anchors["CAISSE_OPT"], caisse_opt_vals, caisse_opt_needed)
 
     gf_needed = max(len(gf_vals), 1)
-    ensure_space("GF_START", BASE["GF_MAIN"], gf_needed)
+    ensure_space("GF_START", BASE["GF_MAIN"], gf_needed, max_col_letter="L")
     write_block_merged_safe(anchors["GF_START"], gf_vals, gf_needed)
 
     gf_opt_needed = max(len(gf_opt_vals), 1)
-    ensure_space("GF_OPT", BASE["GF_OPT"], gf_opt_needed)
+    ensure_space("GF_OPT", BASE["GF_OPT"], gf_opt_needed, max_col_letter="L")
     write_block_merged_safe(anchors["GF_OPT"], gf_opt_vals, gf_opt_needed)
 
     hay_needed = max(len(hay_vals), 1)
-    ensure_space("HAY_START", BASE["HAY_MAIN"], hay_needed)
+    ensure_space("HAY_START", BASE["HAY_MAIN"], hay_needed, max_col_letter="L")
     write_block_merged_safe(anchors["HAY_START"], hay_vals, hay_needed)
 
     hay_opt_needed = max(len(hay_opt_vals), 1)
-    ensure_space("HAY_OPT", BASE["HAY_OPT"], hay_opt_needed)
+    ensure_space("HAY_OPT", BASE["HAY_OPT"], hay_opt_needed, max_col_letter="L")
     write_block_merged_safe(anchors["HAY_OPT"], hay_opt_vals, hay_opt_needed)
 
     # ---- DIMENSIONS ----
@@ -555,7 +630,7 @@ with col3:
 
 code_pf_ref = veh.get("Code_PF", "")
 
-# Codes effectivement utilisés (vehicule + overrides sidebar)
+# Codes réellement utilisés (vehicule + overrides sidebar)
 cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
 mot_prod_code, mot_opt_code = choose_codes(mot_prod_choice, mot_opt_choice, veh.get("M_moteur"), veh.get("M_moteur-OPTIONS"))
 ch_prod_code, ch_opt_code = choose_codes(ch_prod_choice, ch_opt_choice, veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS"))
