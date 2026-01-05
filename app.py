@@ -10,6 +10,22 @@ from openpyxl.utils import column_index_from_string
 from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 
+import time
+
+def file_info(path):
+    if not os.path.exists(path):
+        return f"❌ {path} introuvable"
+    return f"✅ {path} | {os.path.getsize(path)} bytes | mtime={time.ctime(os.path.getmtime(path))}"
+
+st.sidebar.markdown("### Debug templates")
+st.sidebar.write(file_info("FT_Grands_Comptes.xlsx"))
+st.sidebar.write(file_info("FT_Grands_Comptes_CAISSE_LONG.xlsx"))
+
+if st.sidebar.button("🔄 Clear cache Streamlit"):
+    st.cache_data.clear()
+    st.rerun()
+
+
 APP_VERSION = "2026-01-05_templates_short_long_caisse_frigo_hayon_B_then_F_no_insert_rows"
 
 # ----------------- CONFIG APP -----------------
