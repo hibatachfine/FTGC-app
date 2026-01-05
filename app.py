@@ -3,19 +3,19 @@ import pandas as pd
 import os
 import re
 from io import BytesIO
+
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Alignment
 
-APP_VERSION = "2025-12-31_fix_indentation_extra_rows_v2"
+APP_VERSION = "2026-01-05_fix_extra_rows_full_app"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
 st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
-
 st.sidebar.info(f"✅ Version: {APP_VERSION}")
 
 IMG_ROOT = "images"  # dossier racine des images dans le repo
@@ -58,6 +58,16 @@ def extract_pf_key(code_pf: str):
     if not isinstance(code_pf, str) or code_pf.strip() == "":
         return ""
     return code_pf.split(" - ")[0].strip()
+
+
+def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
+    prod_code = veh_prod
+    opt_code = veh_opt
+    if isinstance(prod_choice, str) and prod_choice not in (None, "", "Tous"):
+        prod_code = prod_choice
+    if isinstance(opt_choice, str) and opt_choice not in (None, "", "Tous"):
+        opt_code = opt_choice
+    return prod_code, opt_code
 
 
 # ----------------- IMAGES -----------------
@@ -181,14 +191,22 @@ def genere_ft_excel(
     caisse_prod_choice, caisse_opt_choice,
     gf_prod_choice, gf_opt_choice,
     hay_prod_choice, hay_opt_choice,
+    cabines, moteurs, chassis, caisses, frigo, hayons
 ):
     template_path = "FT_Grand_Compte.xlsx"
     if not os.path.exists(template_path):
-        st.info("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo.")
+        st.error("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo.")
         return None
 
     wb = load_workbook(template_path, read_only=False, data_only=False)
-    ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    # feuille cible robuste
+    if "date" in wb.sheetnames:
+        ws = wb["date"]
+    elif "data" in wb.sheetnames:
+        ws = wb["data"]
+    else:
+        ws = wb[wb.sheetnames[0]]
 
     # --- excel helpers ---
     def cell_to_rc(cell_addr: str):
@@ -275,15 +293,6 @@ def genere_ft_excel(
 
         return None
 
-    def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
-        prod_code = veh_prod
-        opt_code = veh_opt
-        if isinstance(prod_choice, str) and prod_choice not in (None, "", "Tous"):
-            prod_code = prod_choice
-        if isinstance(opt_choice, str) and opt_choice not in (None, "", "Tous"):
-            opt_code = opt_choice
-        return prod_code, opt_code
-
     # ---- HEADER ----
     header_map = {
         "code_pays": "C5",
@@ -327,7 +336,6 @@ def genere_ft_excel(
         ws.add_image(xl_img_carbu)
 
     # ---- COMPOSANTS ----
-    global cabines, moteurs, chassis, caisses, frigo, hayons
     code_pf_ref = veh.get("Code_PF", "")
 
     cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
@@ -384,13 +392,13 @@ def genere_ft_excel(
         "CAB_START": cell_to_rc("B18"),
         "MOT_START": cell_to_rc("F18"),
         "CH_START":  cell_to_rc("H18"),
-        "CAB_OPT": cell_to_rc("B38"),
-        "MOT_OPT": cell_to_rc("F38"),
-        "CH_OPT":  cell_to_rc("H38"),
+        "CAB_OPT":   cell_to_rc("B38"),
+        "MOT_OPT":   cell_to_rc("F38"),
+        "CH_OPT":    cell_to_rc("H38"),
         "CAISSE_START": cell_to_rc("B40"),
         "CAISSE_OPT":   cell_to_rc("B47"),
-        "GF_START": cell_to_rc("B50"),
-        "GF_OPT":   cell_to_rc("B58"),
+        "GF_START":  cell_to_rc("B50"),
+        "GF_OPT":    cell_to_rc("B58"),
         "HAY_START": cell_to_rc("B61"),
         "HAY_OPT":   cell_to_rc("B68"),
     }
@@ -406,7 +414,7 @@ def genere_ft_excel(
         "HAY_OPT":  3,
     }
 
-    # ✅ Fonction OK : extra_rows est défini ET utilisé uniquement ici
+    # ✅ ICI: extra_rows est local et ne fuit pas → plus de NameError possible
     def ensure_space(anchor_key: str, base_rows: int, needed_rows: int):
         extra_rows = max(0, int(needed_rows) - int(base_rows))
         if extra_rows <= 0:
@@ -547,5 +555,53 @@ with col3:
 
 code_pf_ref = veh.get("Code_PF", "")
 
-affiche_composant("Cabine", veh.get("C_Cabine"), cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Châssis", veh.get("C_Chassis"),
+# Codes effectivement utilisés (vehicule + overrides sidebar)
+cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
+mot_prod_code, mot_opt_code = choose_codes(mot_prod_choice, mot_opt_choice, veh.get("M_moteur"), veh.get("M_moteur-OPTIONS"))
+ch_prod_code, ch_opt_code = choose_codes(ch_prod_choice, ch_opt_choice, veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS"))
+caisse_prod_code, caisse_opt_code = choose_codes(caisse_prod_choice, caisse_opt_choice, veh.get("C_Caisse"), veh.get("C_Caisse-OPTIONS"))
+gf_prod_code, gf_opt_code = choose_codes(gf_prod_choice, gf_opt_choice, veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS"))
+hay_prod_code, hay_opt_code = choose_codes(hay_prod_choice, hay_opt_choice, veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS"))
+
+affiche_composant("Cabine (Produit)", cab_prod_code, cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Cabine (Options)", cab_opt_code, cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="O")
+
+affiche_composant("Moteur (Produit)", mot_prod_code, moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Moteur (Options)", mot_opt_code, moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="O")
+
+affiche_composant("Châssis (Produit)", ch_prod_code, chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Châssis (Options)", ch_opt_code, chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="O")
+
+affiche_composant("Caisse (Produit)", caisse_prod_code, caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Caisse (Options)", caisse_opt_code, caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="O")
+
+affiche_composant("Groupe frigo (Produit)", gf_prod_code, frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Groupe frigo (Options)", gf_opt_code, frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="O")
+
+affiche_composant("Hayon (Produit)", hay_prod_code, hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
+affiche_composant("Hayon (Options)", hay_opt_code, hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="O")
+
+st.markdown("---")
+st.subheader("Génération de la fiche technique")
+
+if st.button("⚙️ Générer la FT (Excel)"):
+    ft_file = genere_ft_excel(
+        veh,
+        cab_prod_choice, cab_opt_choice,
+        mot_prod_choice, mot_opt_choice,
+        ch_prod_choice, ch_opt_choice,
+        caisse_prod_choice, caisse_opt_choice,
+        gf_prod_choice, gf_opt_choice,
+        hay_prod_choice, hay_opt_choice,
+        cabines, moteurs, chassis, caisses, frigo, hayons
+    )
+
+    if ft_file is not None:
+        filename = f"FT_{str(veh.get('Code_PF','')).strip() or 'vehicule'}.xlsx"
+        st.success("✅ Fiche générée !")
+        st.download_button(
+            label="⬇️ Télécharger la fiche Excel",
+            data=ft_file,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
