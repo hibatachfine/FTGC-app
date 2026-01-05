@@ -18,6 +18,16 @@ st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 st.sidebar.info(f"✅ Version: {APP_VERSION}")
 
+# ✅ Template upload (bypass repo caching / deployment issues)
+st.sidebar.markdown("### Template Excel")
+uploaded_template = st.sidebar.file_uploader(
+    "Uploader le template (xlsx) à utiliser",
+    type=["xlsx"]
+)
+
+TEMPLATE_FALLBACK = "FT_Grands_Comptes.xlsx"
+
+
 IMG_ROOT = "images"
 
 
