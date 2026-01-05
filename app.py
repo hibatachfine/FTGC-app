@@ -7,11 +7,13 @@ from copy import copy
 
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils import column_index_from_string
 from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Alignment
 
-APP_VERSION = "2026-01-05_force_fullwidth_merges_pages_2_3"
+APP_VERSION = "2026-01-05_flow_pages_like_page1_fullwidth_BL_printtitles"
 
+# ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
 st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
@@ -35,7 +37,6 @@ def get_col(df: pd.DataFrame, wanted: str):
     if df is None or wanted is None:
         return None
     w = _norm(wanted)
-
     for c in df.columns:
         if _norm(c) == w:
             return c
@@ -115,10 +116,13 @@ def filtre_select(df, col_wanted, label):
     if col is None:
         st.sidebar.write(f"(colonne '{col_wanted}' absente)")
         return df, None
+
     options = clean_unique_list(df[col])
     choix = st.sidebar.selectbox(label, ["Tous"] + options)
+
     if choix != "Tous":
         df = df[df[col].astype(str).str.strip() == str(choix).strip()]
+
     return df, choix
 
 
@@ -182,7 +186,7 @@ def genere_ft_excel(
     caisse_prod_choice, caisse_opt_choice,
     gf_prod_choice, gf_opt_choice,
     hay_prod_choice, hay_opt_choice,
-    cabines, moteurs, chassis, caisses, frigo, hayons
+    cabines, moteurs, chassis, caisses, frigo, hayons,
 ):
     template_path = "FT_Grand_Compte.xlsx"
     if not os.path.exists(template_path):
@@ -192,58 +196,24 @@ def genere_ft_excel(
     wb = load_workbook(template_path, read_only=False, data_only=False)
     ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
 
-    # ✅ Réglage largeur pages 2/3 : c’est la zone blanche de texte.
-    # Sur ta capture c’est B → F. Si ta zone va plus loin, mets "L".
-    P23_TEXT_START_COL = column_index_from_string("B")
-    P23_TEXT_END_COL = column_index_from_string("L")
+    # ✅ Pleine largeur texte
+    FULL_START_COL = column_index_from_string("B")
+    FULL_END_COL = column_index_from_string("L")
+
+    # ✅ En-tête répété à l'impression (comme la page 1)
+    ws.print_title_rows = "1:17"
+
+    # ✅ laisser Excel paginer tout seul (sinon pages bizarres)
+    try:
+        ws.row_breaks.brk = []
+    except Exception:
+        pass
 
     # ---------- excel helpers ----------
     def cell_to_rc(cell_addr: str):
         col_letters = "".join(ch for ch in cell_addr if ch.isalpha())
         row_digits = "".join(ch for ch in cell_addr if ch.isdigit())
         return column_index_from_string(col_letters), int(row_digits)
-
-    def _collect_merges():
-        return [(rng.min_row, rng.max_row, rng.min_col, rng.max_col) for rng in list(ws.merged_cells.ranges)]
-
-    def _unmerge_all(merges):
-        for (r1, r2, c1, c2) in merges:
-            try:
-                ws.unmerge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
-            except Exception:
-                pass
-
-    def _remerge_shifted(merges, insert_at_row, n):
-        # shift / expand merges properly when inserting rows
-        for (r1, r2, c1, c2) in merges:
-            nr1, nr2 = r1, r2
-            if r2 < insert_at_row:
-                pass
-            elif r1 >= insert_at_row:
-                nr1 += n
-                nr2 += n
-            else:
-                nr2 += n  # merge crosses insertion -> expand
-            try:
-                ws.merge_cells(start_row=nr1, start_column=c1, end_row=nr2, end_column=c2)
-            except Exception:
-                pass
-
-    def insert_rows_preserve_merges(insert_at_row: int, n: int):
-        if n <= 0:
-            return
-        merges_before = _collect_merges()
-        _unmerge_all(merges_before)
-        ws.insert_rows(insert_at_row, n)
-        _remerge_shifted(merges_before, insert_at_row, n)
-
-        # shift page breaks too
-        try:
-            for br in ws.row_breaks.brk:
-                if br.id >= insert_at_row:
-                    br.id += n
-        except Exception:
-            pass
 
     def merged_top_left(row, col):
         for rng in ws.merged_cells.ranges:
@@ -257,23 +227,52 @@ def genere_ft_excel(
         if isinstance(cell, MergedCell):
             return
         cell.value = value
-        try:
-            al = copy(cell.alignment)
-            al.wrap_text = True
-            cell.alignment = al
-        except Exception:
-            pass
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-    def write_block(start_rc, values, n_rows):
+    def write_block_merged_safe(start_rc, values, n_rows):
         start_col, start_row = start_rc
         for i in range(n_rows):
             v = values[i] if i < len(values) else None
             set_cell_value_merged_safe(start_row + i, start_col, v)
 
-    def copy_row_styles(template_row: int, target_row: int, max_col_letter: str):
+    def _collect_merges():
+        return [(rng.min_row, rng.max_row, rng.min_col, rng.max_col) for rng in list(ws.merged_cells.ranges)]
+
+    def _unmerge_all(merges):
+        for (r1, r2, c1, c2) in merges:
+            try:
+                ws.unmerge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
+            except Exception:
+                pass
+
+    def _remerge_shifted(merges, insert_at_row, n):
+        for (r1, r2, c1, c2) in merges:
+            nr1, nr2 = r1, r2
+            if r2 < insert_at_row:
+                pass
+            elif r1 >= insert_at_row:
+                nr1 += n
+                nr2 += n
+            else:
+                nr2 += n
+            try:
+                ws.merge_cells(start_row=nr1, start_column=c1, end_row=nr2, end_column=c2)
+            except Exception:
+                pass
+
+    def insert_rows_preserve_merges(insert_at_row: int, n: int):
+        if n <= 0:
+            return
+        merges_before = _collect_merges()
+        _unmerge_all(merges_before)
+        ws.insert_rows(insert_at_row, n)
+        _remerge_shifted(merges_before, insert_at_row, n)
+
+    def copy_row_styles(template_row: int, target_row: int, max_col_letter: str = "L"):
         max_col = column_index_from_string(max_col_letter)
         if ws.row_dimensions[template_row].height is not None:
             ws.row_dimensions[target_row].height = ws.row_dimensions[template_row].height
+
         for c in range(1, max_col + 1):
             src = ws.cell(row=template_row, column=c)
             dst = ws.cell(row=target_row, column=c)
@@ -288,50 +287,31 @@ def genere_ft_excel(
                 dst.protection = copy(src.protection)
                 dst.alignment = copy(src.alignment)
 
-    def force_fullwidth_merges(start_row: int, n_rows: int, start_col: int, end_col: int, template_row: int):
-        """
-        ✅ Force des merges horizontaux start_col→end_col pour chaque ligne.
-        Ça donne une vraie largeur de wrap sur toute la zone blanche.
-        """
-        # Unmerge merges qui touchent la zone (mais qui ne commencent pas en A)
-        merges_to_remove = []
+    def unmerge_row_overlaps(row: int, c1: int, c2: int):
+        # uniquement les merges sur UNE ligne (ne casse pas les merges verticaux)
         for rng in list(ws.merged_cells.ranges):
-            if rng.min_col >= start_col and not (rng.max_col < start_col or rng.min_col > end_col):
-                if not (rng.max_row < start_row or rng.min_row > start_row + n_rows - 1):
-                    merges_to_remove.append(rng)
+            if rng.min_row == row and rng.max_row == row:
+                if not (rng.max_col < c1 or rng.min_col > c2):
+                    try:
+                        ws.unmerge_cells(str(rng))
+                    except Exception:
+                        pass
 
-        for rng in merges_to_remove:
-            try:
-                ws.unmerge_cells(str(rng))
-            except Exception:
-                pass
+    def merge_row(row: int, c1: int, c2: int):
+        unmerge_row_overlaps(row, c1, c2)
+        try:
+            ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+        except Exception:
+            pass
 
-        # Merge par ligne + recopier le style du template_row (col start_col)
-        src_cell = ws.cell(row=template_row, column=start_col)
-        for i in range(n_rows):
-            r = start_row + i
-            try:
-                ws.merge_cells(start_row=r, start_column=start_col, end_row=r, end_column=end_col)
-            except Exception:
-                pass
-
-            dst_cell = ws.cell(row=r, column=start_col)
-            if not isinstance(src_cell, MergedCell) and src_cell.has_style:
-                dst_cell._style = copy(src_cell._style)
-                dst_cell.font = copy(src_cell.font)
-                dst_cell.fill = copy(src_cell.fill)
-                dst_cell.border = copy(src_cell.border)
-                dst_cell.number_format = src_cell.number_format
-                dst_cell.protection = copy(src_cell.protection)
-                dst_cell.alignment = copy(src_cell.alignment)
-
-            # wrap on
-            try:
-                al = copy(dst_cell.alignment)
-                al.wrap_text = True
-                dst_cell.alignment = al
-            except Exception:
-                pass
+    def find_row_contains(needle: str, row_min: int, row_max: int):
+        needle = (needle or "").lower()
+        for r in range(row_min, row_max + 1):
+            for c in range(1, 13):
+                v = ws.cell(r, c).value
+                if isinstance(v, str) and needle in v.lower():
+                    return r
+        return None
 
     # ---------- data helpers ----------
     def build_values(row, code_col):
@@ -354,6 +334,7 @@ def genere_ft_excel(
     def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
         if not isinstance(code, str) or code.strip() == "" or code == "Tous":
             code = ""
+
         code_col = get_col(df, code_col_wanted) or df.columns[0]
 
         po_col = None
@@ -379,6 +360,7 @@ def genere_ft_excel(
                         cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
                         return cand_po.iloc[0] if not cand_po.empty else cand.iloc[0]
                     return cand.iloc[0]
+
         return None
 
     # ---- HEADER ----
@@ -423,12 +405,13 @@ def genere_ft_excel(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ---- COMPOSANTS ----
+    # ---- COMPOSANTS TOP (comme avant) ----
     code_pf_ref = veh.get("Code_PF", "")
 
     cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
     mot_prod_code, mot_opt_code = choose_codes(mot_prod_choice, mot_opt_choice, veh.get("M_moteur"), veh.get("M_moteur-OPTIONS"))
     ch_prod_code, ch_opt_code = choose_codes(ch_prod_choice, ch_opt_choice, veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS"))
+
     caisse_prod_code, caisse_opt_code = choose_codes(caisse_prod_choice, caisse_opt_choice, veh.get("C_Caisse"), veh.get("C_Caisse-OPTIONS"))
     gf_prod_code, gf_opt_code = choose_codes(gf_prod_choice, gf_opt_choice, veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS"))
     hay_prod_code, hay_opt_code = choose_codes(hay_prod_choice, hay_opt_choice, veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS"))
@@ -483,84 +466,95 @@ def genere_ft_excel(
         "CAB_OPT":   cell_to_rc("B38"),
         "MOT_OPT":   cell_to_rc("F38"),
         "CH_OPT":    cell_to_rc("H38"),
-
-        "CAISSE_START": cell_to_rc("B40"),
-        "CAISSE_OPT":   cell_to_rc("B47"),
-        "GF_START":     cell_to_rc("B50"),
-        "GF_OPT":       cell_to_rc("B58"),
-        "HAY_START":    cell_to_rc("B61"),
-        "HAY_OPT":      cell_to_rc("B68"),
     }
 
     BASE = {
         "TOP_MAIN": 17,
         "TOP_OPT":  3,
-        "CAISSE_MAIN": 5,
-        "CAISSE_OPT":  2,
-        "GF_MAIN": 6,
-        "GF_OPT":  2,
-        "HAY_MAIN": 5,
-        "HAY_OPT":  3,
     }
 
-    def ensure_space(anchor_key: str, base_rows: int, needed_rows: int, template_row: int, max_col_letter: str):
+    def ensure_space(anchor_key: str, base_rows: int, needed_rows: int, template_row: int, max_col_letter: str = "L"):
         extra = max(0, int(needed_rows) - int(base_rows))
         if extra <= 0:
             return
         start_col, start_row = anchors[anchor_key]
         insert_at = start_row + int(base_rows)
+
         insert_rows_preserve_merges(insert_at, extra)
 
-        # copier style sur les nouvelles lignes
         for i in range(extra):
             copy_row_styles(template_row=template_row, target_row=insert_at + i, max_col_letter=max_col_letter)
 
-        # shift anchors after insertion
+        # shift anchors
         new_anchors = {}
         for k, (c, r) in anchors.items():
             new_anchors[k] = (c, r + extra) if r >= insert_at else (c, r)
         anchors.clear()
         anchors.update(new_anchors)
 
-    # ---- WRITE blocks TOP (page 1) ----
+    # ---- WRITE TOP ----
     top_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 1)
     ensure_space("CAB_START", BASE["TOP_MAIN"], top_needed, template_row=anchors["CAB_START"][1], max_col_letter="L")
-    write_block(anchors["CAB_START"], cab_vals, top_needed)
-    write_block(anchors["MOT_START"], mot_vals, top_needed)
-    write_block(anchors["CH_START"],  ch_vals,  top_needed)
+    write_block_merged_safe(anchors["CAB_START"], cab_vals, top_needed)
+    write_block_merged_safe(anchors["MOT_START"], mot_vals, top_needed)
+    write_block_merged_safe(anchors["CH_START"],  ch_vals,  top_needed)
 
     top_opt_needed = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 1)
     ensure_space("CAB_OPT", BASE["TOP_OPT"], top_opt_needed, template_row=anchors["CAB_OPT"][1], max_col_letter="L")
-    write_block(anchors["CAB_OPT"], cab_opt_vals, top_opt_needed)
-    write_block(anchors["MOT_OPT"], mot_opt_vals, top_opt_needed)
-    write_block(anchors["CH_OPT"],  ch_opt_vals,  top_opt_needed)
+    write_block_merged_safe(anchors["CAB_OPT"], cab_opt_vals, top_opt_needed)
+    write_block_merged_safe(anchors["MOT_OPT"], mot_opt_vals, top_opt_needed)
+    write_block_merged_safe(anchors["CH_OPT"],  ch_opt_vals,  top_opt_needed)
 
-    # ---- PAGES 2/3 : force full-width merges B→F ----
-    def write_p23(anchor_key: str, base_rows: int, values: list):
-        needed = max(len(values), 1)
-        start_col, start_row = anchors[anchor_key]
+    # ---- FLOW (comme page 1) : CAISSE / FRIGO / HAYON sous la zone options ----
+    # On prend un "bandeau vert" existant comme style de référence
+    bar_template_row = find_row_contains("options", 30, 45) or 37
+    body_template_row = 18
 
-        # 1) add rows if needed (preserve merges / titles)
-        ensure_space(anchor_key, base_rows, needed, template_row=start_row, max_col_letter="F")
+    # on démarre juste après les blocks déjà écrits
+    bottom_top = max(
+        anchors["CAB_START"][1] + top_needed - 1,
+        anchors["CAB_OPT"][1] + top_opt_needed - 1
+    )
+    flow_row = bottom_top + 3  # petit espace
 
-        # 2) force merges B→F for every line we will write
-        force_fullwidth_merges(
-            start_row=anchors[anchor_key][1],
-            n_rows=needed,
-            start_col=P23_TEXT_START_COL,
-            end_col=P23_TEXT_END_COL,
-            template_row=anchors[anchor_key][1]
-        )
+    def add_header(title: str):
+        nonlocal flow_row
+        insert_rows_preserve_merges(flow_row, 1)
+        copy_row_styles(bar_template_row, flow_row, max_col_letter="L")
+        merge_row(flow_row, FULL_START_COL, FULL_END_COL)
+        set_cell_value_merged_safe(flow_row, FULL_START_COL, title)
+        # centrer le titre comme page 1
+        tl = ws.cell(flow_row, FULL_START_COL)
+        tl.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        flow_row += 1
 
-        # 3) write line by line into column B (top-left of merge)
-        write_block((P23_TEXT_START_COL, anchors[anchor_key][1]), values, needed)
+    def add_line(text: str):
+        nonlocal flow_row
+        insert_rows_preserve_merges(flow_row, 1)
+        copy_row_styles(body_template_row, flow_row, max_col_letter="L")
+        merge_row(flow_row, FULL_START_COL, FULL_END_COL)
+        set_cell_value_merged_safe(flow_row, FULL_START_COL, text)
+        flow_row += 1
 
-    write_p23("CAISSE_START", BASE["CAISSE_MAIN"], caisse_vals)
-    write_p23("CAISSE_OPT",   BASE["CAISSE_OPT"],  caisse_opt_vals)
-    write_p23("GF_START",     BASE["GF_MAIN"],     gf_vals)
-    write_p23("GF_OPT",       BASE["GF_OPT"],      gf_opt_vals)
-    write_p23("HAY_START",    BASE["HAY_MAIN"],    hay_vals)
-    write_p23("HAY_OPT",      BASE["HAY_OPT"],     hay_opt_vals)
+    def add_section(title: str, lines: list):
+        add_header(title)
+        if not lines:
+            add_line("")
+            return
+        for t in lines:
+            add_line(t)
+
+    add_section("CAISSE", caisse_vals)
+    add_section("CAISSE - OPTIONS (à cocher)", caisse_opt_vals)
+    add_section("GROUPE FRIGO", gf_vals)
+    add_section("GROUPE FRIGO - OPTIONS (à cocher)", gf_opt_vals)
+    add_section("HAYON ELEVATEUR", hay_vals)
+    add_section("HAYON ELEVATEUR - OPTIONS (à cocher)", hay_opt_vals)
+
+    last_row_written = flow_row + 2
+
+    # ✅ PRINT AREA : on imprime uniquement ce qu'on a écrit (sinon template pages 2/3 ressort)
+    ws.print_area = f"A1:L{last_row_written}"
 
     # ---- DIMENSIONS ----
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
@@ -655,31 +649,6 @@ with col3:
 
 code_pf_ref = veh.get("Code_PF", "")
 
-cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
-mot_prod_code, mot_opt_code = choose_codes(mot_prod_choice, mot_opt_choice, veh.get("M_moteur"), veh.get("M_moteur-OPTIONS"))
-ch_prod_code, ch_opt_code = choose_codes(ch_prod_choice, ch_opt_choice, veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS"))
-caisse_prod_code, caisse_opt_code = choose_codes(caisse_prod_choice, caisse_opt_choice, veh.get("C_Caisse"), veh.get("C_Caisse-OPTIONS"))
-gf_prod_code, gf_opt_code = choose_codes(gf_prod_choice, gf_opt_choice, veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS"))
-hay_prod_code, hay_opt_code = choose_codes(hay_prod_choice, hay_opt_choice, veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS"))
-
-affiche_composant("Cabine (Produit)", cab_prod_code, cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Cabine (Options)", cab_opt_code, cabines, "C_Cabine", code_pf_for_fallback=code_pf_ref, prefer_po="O")
-
-affiche_composant("Moteur (Produit)", mot_prod_code, moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Moteur (Options)", mot_opt_code, moteurs, "M_moteur", code_pf_for_fallback=code_pf_ref, prefer_po="O")
-
-affiche_composant("Châssis (Produit)", ch_prod_code, chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Châssis (Options)", ch_opt_code, chassis, "CH_chassis", code_pf_for_fallback=code_pf_ref, prefer_po="O")
-
-affiche_composant("Caisse (Produit)", caisse_prod_code, caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Caisse (Options)", caisse_opt_code, caisses, "CF_caisse", code_pf_for_fallback=code_pf_ref, prefer_po="O")
-
-affiche_composant("Groupe frigo (Produit)", gf_prod_code, frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Groupe frigo (Options)", gf_opt_code, frigo, "GF_groupe frigo", code_pf_for_fallback=code_pf_ref, prefer_po="O")
-
-affiche_composant("Hayon (Produit)", hay_prod_code, hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="P")
-affiche_composant("Hayon (Options)", hay_opt_code, hayons, "HL_hayon elevateur", code_pf_for_fallback=code_pf_ref, prefer_po="O")
-
 st.markdown("---")
 st.subheader("Génération de la fiche technique")
 
@@ -694,6 +663,7 @@ if st.button("⚙️ Générer la FT (Excel)"):
         hay_prod_choice, hay_opt_choice,
         cabines, moteurs, chassis, caisses, frigo, hayons
     )
+
     if ft_file is not None:
         filename = f"FT_{str(veh.get('Code_PF','')).strip() or 'vehicule'}.xlsx"
         st.success("✅ Fiche générée !")
