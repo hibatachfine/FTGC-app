@@ -195,7 +195,7 @@ def genere_ft_excel(
     # ✅ Réglage largeur pages 2/3 : c’est la zone blanche de texte.
     # Sur ta capture c’est B → F. Si ta zone va plus loin, mets "L".
     P23_TEXT_START_COL = column_index_from_string("B")
-    P23_TEXT_END_COL = column_index_from_string("F")
+    P23_TEXT_END_COL = column_index_from_string("L")
 
     # ---------- excel helpers ----------
     def cell_to_rc(cell_addr: str):
