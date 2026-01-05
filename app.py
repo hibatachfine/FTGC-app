@@ -146,33 +146,221 @@ def genere_ft_excel(
     caisse_prod_choice, caisse_opt_choice,
     gf_prod_choice, gf_opt_choice,
     hay_prod_choice, hay_opt_choice,
-    cabines, moteurs, chassis, caisses, frigo, hayons,
 ):
-    template_path = "FT_Grand_Compte.xlsx"
-    if not os.path.exists(template_path):
-        st.error("Le fichier modèle 'FT_Grand_Compte.xlsx' n'est pas présent dans le repo.")
+    TEMPLATE_SHORT = "FT_Grands_Comptes.xlsx"
+    TEMPLATE_LONG_CAISSE = "FT_Grands_Comptes_CAISSE_LONG.xlsx"
+
+    # ----------------- helpers Excel -----------------
+    def _norm(s):
+        if s is None:
+            return ""
+        s = str(s).lower().replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        s = " ".join(s.split())
+        return s
+
+    def find_cell_contains(ws, needle: str):
+        nd = _norm(needle)
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and nd in _norm(v):
+                    return cell
         return None
 
-    wb_src = load_workbook(template_path, read_only=False, data_only=False)
-    ws_src = wb_src["date"] if "date" in wb_src.sheetnames else wb_src[wb_src.sheetnames[0]]
+    def merged_range_including(ws, row, col):
+        for rng in ws.merged_cells.ranges:
+            if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
+                return rng
+        return None
 
-    # ---- constants ----
-    FULL_START_COL = column_index_from_string("B")
-    FULL_END_COL = column_index_from_string("L")
-    MAX_COL = FULL_END_COL  # A..L used
-    MAX_COL_LETTER = "L"
+    def region_rows(ws, title_text: str, next_title_text: str | None):
+        c = find_cell_contains(ws, title_text)
+        if not c:
+            return []
+        start = c.row + 1
+        end = ws.max_row
+        if next_title_text:
+            c2 = find_cell_contains(ws, next_title_text)
+            if c2:
+                end = c2.row - 1
+        return list(range(start, end + 1))
 
-    # ---- scan rows helper (robust) ----
-    def find_rows_containing(ws, needle: str, col_max: int = 12):
-        nd = _norm(needle)
-        hits = []
-        for r in range(1, ws.max_row + 1):
-            for c in range(1, col_max + 1):
-                v = ws.cell(r, c).value
-                if isinstance(v, str) and nd in _norm(v):
-                    hits.append(r)
-                    break
-        return hits
+    from openpyxl.styles import Alignment
+    from openpyxl.cell.cell import MergedCell
+    from openpyxl.utils import column_index_from_string
+    from collections import defaultdict
+
+    def desired_blocks(ws, rows, start_cols):
+        """
+        Pour chaque start_col (ex: B=2, F=6), on récupère le end_col max vu dans le template
+        => permet d'avoir la même largeur sur toutes les lignes.
+        """
+        blocks = {}
+        for sc in start_cols:
+            max_end = None
+            for r in rows:
+                rng = merged_range_including(ws, r, sc)
+                if rng and rng.min_row == rng.max_row == r and rng.min_col == sc:
+                    max_end = rng.max_col if max_end is None else max(max_end, rng.max_col)
+                else:
+                    max_end = sc if max_end is None else max_end
+            if max_end is not None:
+                blocks[sc] = max_end
+        return blocks
+
+    def unmerge_overlapping_row(ws, row, c1, c2):
+        for rng in list(ws.merged_cells.ranges):
+            if rng.min_row == row and rng.max_row == row:
+                if not (rng.max_col < c1 or rng.min_col > c2):
+                    try:
+                        ws.unmerge_cells(str(rng))
+                    except Exception:
+                        pass
+
+    def ensure_merge_row(ws, row, c1, c2):
+        if c2 <= c1:
+            return
+        unmerge_overlapping_row(ws, row, c1, c2)
+        try:
+            ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+        except Exception:
+            pass
+
+    def write_merged(ws, row, col, value):
+        rng = merged_range_including(ws, row, col)
+        r0, c0 = (rng.min_row, rng.min_col) if rng else (row, col)
+        cell = ws.cell(r0, c0)
+        if isinstance(cell, MergedCell):
+            return
+        cell.value = value
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    def fill_region(ws, rows, values, start_cols):
+        """
+        Remplit séquentiellement ligne par ligne.
+        Ex: start_cols=[B,F] => B puis F, puis ligne suivante B puis F...
+        """
+        if not rows:
+            return 0, 0
+
+        blocks = desired_blocks(ws, rows, start_cols)
+        # force les fusions pour que ça écrive "sur toute la ligne"
+        for r in rows:
+            for sc in start_cols:
+                ensure_merge_row(ws, r, sc, blocks.get(sc, sc))
+
+        capacity = len(rows) * len(start_cols)
+        n = min(len(values), capacity)
+
+        i = 0
+        for r in rows:
+            for sc in start_cols:
+                if i >= n:
+                    return n, capacity
+                write_merged(ws, r, sc, values[i])
+                i += 1
+
+        return n, capacity
+
+    # ----------------- data helpers (reprend tes fonctions) -----------------
+    def extract_pf_key(code_pf: str):
+        if not isinstance(code_pf, str) or code_pf.strip() == "":
+            return ""
+        return code_pf.split(" - ")[0].strip()
+
+    def get_col(df: pd.DataFrame, wanted: str):
+        if df is None or wanted is None:
+            return None
+        w = _norm(wanted)
+        for c in df.columns:
+            if _norm(c) == w:
+                return c
+        for c in df.columns:
+            if w in _norm(c):
+                return c
+        return None
+
+    def build_values(row, code_col):
+        if row is None:
+            return []
+        vals = []
+        for col, val in row.items():
+            if str(col).strip() == str(code_col).strip():
+                continue
+            if pd.isna(val) or str(val).strip() == "":
+                continue
+            name_lower = _norm(col)
+            if ("produit" in name_lower and "option" in name_lower) or name_lower.startswith("zone libre"):
+                continue
+            if str(col).strip() == "_":
+                continue
+            vals.append(str(val).strip())
+        return vals
+
+    def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
+        if not isinstance(code, str) or code.strip() == "" or code == "Tous":
+            code = ""
+
+        code_col = get_col(df, code_col_wanted) or df.columns[0]
+
+        po_col = None
+        for c in df.columns:
+            if "produit" in _norm(c) and "option" in _norm(c):
+                po_col = c
+                break
+
+        if code:
+            cand = df[df[code_col].astype(str).str.strip() == code.strip()]
+            if not cand.empty:
+                if prefer_po and po_col:
+                    cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
+                    return cand_po.iloc[0] if not cand_po.empty else cand.iloc[0]
+                return cand.iloc[0]
+
+        if isinstance(code_pf_fallback, str) and code_pf_fallback.strip():
+            key = extract_pf_key(code_pf_fallback)
+            if key:
+                cand = df[df[code_col].astype(str).str.contains(re.escape(key), na=False)]
+                if not cand.empty:
+                    if prefer_po and po_col:
+                        cand_po = cand[cand[po_col].astype(str).str.strip().str.upper() == prefer_po.upper()]
+                        return cand_po.iloc[0] if not cand_po.empty else cand.iloc[0]
+                    return cand.iloc[0]
+
+        return None
+
+    def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
+        prod_code = veh_prod
+        opt_code = veh_opt
+        if isinstance(prod_choice, str) and prod_choice not in (None, "", "Tous"):
+            prod_code = prod_choice
+        if isinstance(opt_choice, str) and opt_choice not in (None, "", "Tous"):
+            opt_code = opt_choice
+        return prod_code, opt_code
+
+    # ----------------- 1) calcule les listes de textes -----------------
+    global cabines, moteurs, chassis, caisses, frigo, hayons
+    code_pf_ref = veh.get("Code_PF", "")
+
+    cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
+    mot_prod_code, mot_opt_code = choose_codes(mot_prod_choice, mot_opt_choice, veh.get("M_moteur"), veh.get("M_moteur-OPTIONS"))
+    ch_prod_code, ch_opt_code = choose_codes(ch_prod_choice, ch_opt_choice, veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS"))
+    caisse_prod_code, caisse_opt_code = choose_codes(caisse_prod_choice, caisse_opt_choice, veh.get("C_Caisse"), veh.get("C_Caisse-OPTIONS"))
+    gf_prod_code, gf_opt_code = choose_codes(gf_prod_choice, gf_opt_choice, veh.get("C_Groupe frigo"), veh.get("C_Groupe frigo-OPTIONS"))
+    hay_prod_code, hay_opt_code = choose_codes(hay_prod_choice, hay_opt_choice, veh.get("C_Hayon elevateur"), veh.get("C_Hayon elevateur-OPTIONS"))
+
+    cab_prod_row = find_row(cabines, cab_prod_code, "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="P")
+    cab_opt_row  = find_row(cabines, cab_opt_code,  "C_Cabine", code_pf_fallback=code_pf_ref, prefer_po="O")
+
+    mot_prod_row = find_row(moteurs, mot_prod_code, "M_moteur", code_pf_fallback=code_pf_ref, prefer_po="P")
+    mot_opt_row  = find_row(moteurs, mot_opt_code,  "M_moteur", code_pf_fallback=code_pf_ref, prefer_po="O")
+
+    ch_prod_row  = find_row(chassis, ch_prod_code, "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="P")
+    ch_opt_row   = find_row(chassis, ch_opt_code,  "CH_chassis", code_pf_fallback=code_pf_ref, prefer_po="O")
+
+    caisse_prod_row = find_row(caisses, caisse_prod_code, "CF_caisse", code_pf_fallback=code_pf_ref, prefer_po="P")
+    caisse_opt_row  = find_row(caisses, caisse_opt_code,  "CF_caisse", code_pf_fall
+
 
     # ✅ Determine end of page1 region by finding 2nd "N° de Parc"
     # (page2/page3 start)
