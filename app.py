@@ -7,10 +7,10 @@ from copy import copy
 
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.utils import column_index_from_string
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.cell.cell import MergedCell
 
-APP_VERSION = "2026-01-05_fix_insert_rows_keep_layout_fullwidth"
+APP_VERSION = "2026-01-05_fix_pages_2_3_wrong_column_full_layout"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -213,21 +213,69 @@ def genere_ft_excel(
         row_digits = "".join(ch for ch in cell_addr if ch.isdigit())
         return column_index_from_string(col_letters), int(row_digits)
 
-    def merged_top_left(row, col):
+    def merged_range_containing(row, col):
         for rng in ws.merged_cells.ranges:
             if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
-                return rng.min_row, rng.min_col
+                return rng
+        return None
+
+    def col_width(col_idx: int) -> float:
+        letter = get_column_letter(col_idx)
+        w = ws.column_dimensions[letter].width
+        return float(w) if w is not None else 8.43
+
+    def snap_to_wide_area(row: int, col: int, search_right: int = 12):
+        """
+        Si on pointe une colonne étroite (bandeau vertical), on se décale automatiquement
+        vers la cellule/merge "large" la plus proche à droite.
+        """
+        best_col = col
+        best_score = -1e9
+
+        start_w = col_width(col)
+
+        for c in range(col, col + search_right + 1):
+            rng = merged_range_containing(row, c)
+            if rng:
+                width = rng.max_col - rng.min_col + 1
+                left = rng.min_col
+            else:
+                width = 1
+                left = c
+
+            dist = abs(c - col)
+            w = col_width(c)
+
+            # Score: on préfère les merges larges, proche de la colonne de départ.
+            score = (width * 100.0) + (w * 2.0) - (dist * 12.0)
+
+            # Si la colonne de départ est très étroite, on force à chercher plus large
+            if start_w < 4.5 and c == col:
+                score -= 500
+
+            if score > best_score:
+                best_score = score
+                best_col = left
+
+        return row, best_col
+
+    def merged_top_left(row, col):
+        rng = merged_range_containing(row, col)
+        if rng:
+            return rng.min_row, rng.min_col
         return row, col
 
     def set_cell_value_merged_safe(row, col, value):
+        # ✅ important: snap vers la zone large sur pages 2/3
+        row, col = snap_to_wide_area(row, col, search_right=16)
+
         r0, c0 = merged_top_left(row, col)
         cell = ws.cell(row=r0, column=c0)
         if isinstance(cell, MergedCell):
             return
         cell.value = value
 
-        # On garde la police/mise en page du template (déjà copiée).
-        # Juste on force le wrap pour éviter de couper le texte.
+        # garder le style template + wrap
         try:
             al = copy(cell.alignment)
             al.wrap_text = True
@@ -248,19 +296,14 @@ def genere_ft_excel(
         template_row: int,
         max_col_letter: str = "L",
     ):
-        """
-        Insert rows and replicate EXACT template layout (styles + merges + row height)
-        so new lines look identical and text spans full width.
-        """
         if n <= 0:
             return anchors_dict
 
         max_col = column_index_from_string(max_col_letter)
 
-        # 1) Insert rows
         ws.insert_rows(insert_at_row, n)
 
-        # 2) Shift page breaks (avoid weird blank pages)
+        # décale les sauts de page (sinon pages bizarres)
         try:
             for br in ws.row_breaks.brk:
                 if br.id >= insert_at_row:
@@ -268,25 +311,31 @@ def genere_ft_excel(
         except Exception:
             pass
 
-        # 3) Capture horizontal merges on template row (single-row merges)
-        merges_to_clone = []
+        # on clone les merges "horizontaux" présents sur la ligne modèle,
+        # même si le merge original s'étend sur plusieurs lignes
+        spans = []
         for rng in list(ws.merged_cells.ranges):
-            if rng.min_row == template_row and rng.max_row == template_row:
-                merges_to_clone.append((rng.min_col, rng.max_col))
+            if rng.min_row <= template_row <= rng.max_row:
+                if rng.max_col > rng.min_col:
+                    spans.append((rng.min_col, rng.max_col))
+        spans = sorted(set(spans))
 
-        # 4) Row height
         base_height = ws.row_dimensions[template_row].height
 
-        # 5) For each new row: copy styles + row height + merges
         for i in range(n):
             new_r = insert_at_row + i
 
             if base_height is not None:
                 ws.row_dimensions[new_r].height = base_height
 
+            # copie styles cellule par cellule (jusqu'à L)
             for c in range(1, max_col + 1):
                 src = ws.cell(row=template_row, column=c)
                 dst = ws.cell(row=new_r, column=c)
+
+                # si src est une MergedCell (pas top-left), elle n'a pas de style fiable
+                if isinstance(src, MergedCell):
+                    continue
 
                 if src.has_style:
                     dst._style = copy(src._style)
@@ -297,13 +346,24 @@ def genere_ft_excel(
                     dst.protection = copy(src.protection)
                     dst.alignment = copy(src.alignment)
 
-            for (c1, c2) in merges_to_clone:
+            # recrée les merges horizontaux sur la nouvelle ligne
+            for (c1, c2) in spans:
                 try:
                     ws.merge_cells(start_row=new_r, start_column=c1, end_row=new_r, end_column=c2)
+                    # assure que le top-left du merge a bien le style
+                    src_tl = ws.cell(row=template_row, column=c1)
+                    dst_tl = ws.cell(row=new_r, column=c1)
+                    if not isinstance(src_tl, MergedCell) and src_tl.has_style:
+                        dst_tl._style = copy(src_tl._style)
+                        dst_tl.font = copy(src_tl.font)
+                        dst_tl.fill = copy(src_tl.fill)
+                        dst_tl.border = copy(src_tl.border)
+                        dst_tl.number_format = src_tl.number_format
+                        dst_tl.protection = copy(src_tl.protection)
+                        dst_tl.alignment = copy(src_tl.alignment)
                 except Exception:
                     pass
 
-        # 6) Update anchors
         new_anchors = {}
         for k, (c, r) in anchors_dict.items():
             new_anchors[k] = (c, r + n) if r >= insert_at_row else (c, r)
@@ -454,6 +514,7 @@ def genere_ft_excel(
     hay_vals = build_values(hay_prod_row, hay_codecol)
     hay_opt_vals = build_values(hay_opt_row, hay_codecol)
 
+    # ✅ IMPORTANT : pages 2/3 -> anchors en C (pas B) pour ne pas écrire dans la colonne verticale verte
     anchors = {
         "CAB_START": cell_to_rc("B18"),
         "MOT_START": cell_to_rc("F18"),
@@ -461,12 +522,13 @@ def genere_ft_excel(
         "CAB_OPT":   cell_to_rc("B38"),
         "MOT_OPT":   cell_to_rc("F38"),
         "CH_OPT":    cell_to_rc("H38"),
-        "CAISSE_START": cell_to_rc("B40"),
-        "CAISSE_OPT":   cell_to_rc("B47"),
-        "GF_START":  cell_to_rc("B50"),
-        "GF_OPT":    cell_to_rc("B58"),
-        "HAY_START": cell_to_rc("B61"),
-        "HAY_OPT":   cell_to_rc("B68"),
+
+        "CAISSE_START": cell_to_rc("C40"),
+        "CAISSE_OPT":   cell_to_rc("C47"),
+        "GF_START":     cell_to_rc("C50"),
+        "GF_OPT":       cell_to_rc("C58"),
+        "HAY_START":    cell_to_rc("C61"),
+        "HAY_OPT":      cell_to_rc("C68"),
     }
 
     BASE = {
@@ -484,11 +546,12 @@ def genere_ft_excel(
         extra_rows = max(0, int(needed_rows) - int(base_rows))
         if extra_rows <= 0:
             return
+
         start_col, start_row = anchors[anchor_key]
         insert_at = start_row + int(base_rows)
 
-        # ✅ IMPORTANT : la dernière ligne du bloc (déjà bien formatée) sert de "modèle"
-        template_row = insert_at - 1
+        # ✅ ligne modèle = 1ère ligne du bloc (celle qui a la bonne mise en forme)
+        template_row = start_row
 
         new_anchors = insert_rows_and_shift_keep_layout(
             anchors_dict=anchors,
@@ -630,7 +693,6 @@ with col3:
 
 code_pf_ref = veh.get("Code_PF", "")
 
-# Codes réellement utilisés (vehicule + overrides sidebar)
 cab_prod_code, cab_opt_code = choose_codes(cab_prod_choice, cab_opt_choice, veh.get("C_Cabine"), veh.get("C_Cabine-OPTIONS"))
 mot_prod_code, mot_opt_code = choose_codes(mot_prod_choice, mot_opt_choice, veh.get("M_moteur"), veh.get("M_moteur-OPTIONS"))
 ch_prod_code, ch_opt_code = choose_codes(ch_prod_choice, ch_opt_choice, veh.get("C_Chassis"), veh.get("C_Chassis-OPTIONS"))
