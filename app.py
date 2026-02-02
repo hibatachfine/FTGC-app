@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import os
 import re
+import math
 from io import BytesIO
+from copy import copy
 
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
@@ -10,7 +12,7 @@ from openpyxl.utils import column_index_from_string
 from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 
-APP_VERSION = "2026-01-05_simple_fill_FT_Grands_Comptes_only"
+APP_VERSION = "2026-02-02_dynamic_sections_no_overwrite"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -18,7 +20,7 @@ st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 st.sidebar.info(f"✅ Version: {APP_VERSION}")
 
-# ✅ Template upload (bypass repo caching / deployment issues)
+# ✅ Template upload
 st.sidebar.markdown("### Template Excel")
 uploaded_template = st.sidebar.file_uploader(
     "Uploader le template (xlsx) à utiliser",
@@ -26,10 +28,7 @@ uploaded_template = st.sidebar.file_uploader(
 )
 
 TEMPLATE_FALLBACK = "FT_Grands_Comptes.xlsx"
-
-
 IMG_ROOT = "images"
-
 
 # ----------------- HELPERS -----------------
 def _norm(s: str) -> str:
@@ -212,37 +211,100 @@ def _write_merged(ws, row, col, value):
     cell.alignment = Alignment(wrap_text=True, vertical="top")
 
 
-def _infer_block_endcol(ws, rows, start_col, default_endcol):
-    for r in rows:
-        rng = _merged_range_including(ws, r, start_col)
-        if rng and rng.min_row == rng.max_row == r and rng.min_col == start_col:
-            return rng.max_col
-    return default_endcol
+def _style_source_cell(ws, row, col):
+    cell = ws.cell(row, col)
+    if isinstance(cell, MergedCell):
+        rng = _merged_range_including(ws, row, col)
+        if rng:
+            return ws.cell(rng.min_row, rng.min_col)
+    return cell
 
 
-def fill_region(ws, rows, values, start_cols, mode="auto"):
+def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_letter="L"):
+    if n_rows <= 0 or style_src_row is None:
+        return
+
+    max_col = column_index_from_string(max_col_letter)
+    ws.insert_rows(insert_at_row, amount=n_rows)
+
+    # copie format ligne par ligne
+    for i in range(n_rows):
+        r = insert_at_row + i
+        ws.row_dimensions[r].height = ws.row_dimensions[style_src_row].height
+
+        for c in range(1, max_col + 1):
+            src = _style_source_cell(ws, style_src_row, c)
+            tgt = ws.cell(r, c)
+            tgt.value = None
+            tgt.font = copy(src.font)
+            tgt.border = copy(src.border)
+            tgt.fill = copy(src.fill)
+            tgt.number_format = src.number_format
+            tgt.protection = copy(src.protection)
+            tgt.alignment = copy(src.alignment)
+
+
+def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=250):
+    """
+    Insère des lignes JUSTE AVANT next_title_row pour agrandir la section.
+    Process bottom->top recommandé.
+    """
+    if title_row is None:
+        return 0
+
+    if rows_needed is None or rows_needed <= 0:
+        return 0
+
+    rows = _region_rows(ws, title_row, next_title_row)
+    current = len(rows)
+
+    if rows_needed <= current:
+        return 0
+
+    extra = rows_needed - current
+    if extra > hard_cap_extra:
+        extra = hard_cap_extra
+
+    insert_at = next_title_row if next_title_row is not None else (ws.max_row + 1)
+    style_src_row = rows[0] if rows else (title_row + 1)
+
+    _insert_rows_with_style(ws, insert_at, extra, style_src_row, max_col_letter=max_col_letter)
+    return extra
+
+
+def fill_region(ws, rows, values, start_cols, mode="auto", end_cols_override=None):
     if not rows:
         return 0, 0
 
-    # defaults (ton template)
     default_full_end = column_index_from_string("L")
     default_left_end = column_index_from_string("E")
     default_right_end = column_index_from_string("L")
 
     ends = {}
+
+    # override prioritaire
+    if end_cols_override:
+        for sc in start_cols:
+            if sc in end_cols_override:
+                ends[sc] = end_cols_override[sc]
+
+    # fallback logique existante
     if mode == "full" or (mode == "auto" and len(start_cols) == 1):
         sc = start_cols[0]
-        ends[sc] = _infer_block_endcol(ws, rows, sc, default_full_end)
+        if sc not in ends:
+            ends[sc] = default_full_end
     else:
         for sc in start_cols:
+            if sc in ends:
+                continue
             if column_index_from_string("B") == sc:
-                ends[sc] = _infer_block_endcol(ws, rows, sc, default_left_end)
+                ends[sc] = default_left_end
             elif column_index_from_string("F") == sc:
-                ends[sc] = _infer_block_endcol(ws, rows, sc, default_right_end)
+                ends[sc] = default_right_end
             else:
-                ends[sc] = _infer_block_endcol(ws, rows, sc, default_full_end)
+                ends[sc] = default_full_end
 
-    # force merges
+    # force merges (ligne par ligne)
     for r in rows:
         for sc in start_cols:
             _ensure_merge_row(ws, r, sc, ends.get(sc, sc))
@@ -313,8 +375,8 @@ def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
     return None
 
 
-# ----------------- EXCEL GENERATION (SIMPLE) -----------------
-def genere_ft_excel_simple(
+# ----------------- EXCEL GENERATION (DYNAMIC) -----------------
+def genere_ft_excel_dynamic(
     veh,
     cab_prod_choice, cab_opt_choice,
     mot_prod_choice, mot_opt_choice,
@@ -323,16 +385,20 @@ def genere_ft_excel_simple(
     gf_prod_choice, gf_opt_choice,
     hay_prod_choice, hay_opt_choice,
     cabines, moteurs, chassis, caisses, frigo, hayons,
+    template_bytes=None,
+    template_path=TEMPLATE_FALLBACK,
+    debug=False,
 ):
-    TEMPLATE = "FT_Grands_Comptes.xlsx"
-    if not os.path.exists(TEMPLATE):
-        st.error(f"Template introuvable : {TEMPLATE}")
-        return None
+    # Load template
+    if template_bytes:
+        wb = load_workbook(BytesIO(template_bytes), read_only=False, data_only=False)
+    else:
+        if not os.path.exists(template_path):
+            st.error(f"Template introuvable : {template_path}")
+            return None
+        wb = load_workbook(template_path, read_only=False, data_only=False)
 
-    wb = load_workbook(TEMPLATE, read_only=False, data_only=False)
     ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
-
-    # Pas de répétition d'entête imprimée
     ws.print_title_rows = None
 
     # ---------- build values ----------
@@ -426,56 +492,100 @@ def genere_ft_excel_simple(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ---------- locate sections ----------
+    # ---------- locate sections (initial) ----------
     cab_row = _find_title_row(ws, ["cabine"], exclude_keywords=["options"])
-    cab_opt_row = _find_title_row(ws, ["cabine", "options"])
+    cab_opt_row_t = _find_title_row(ws, ["cabine", "options"])
     car_row = _find_title_row(ws, ["carrosserie"], exclude_keywords=["options"])
-    car_opt_row = _find_title_row(ws, ["carrosserie", "options"])
+    car_opt_row_t = _find_title_row(ws, ["carrosserie", "options"])
     fr_row = _find_title_row(ws, ["groupe", "frigorifique"], exclude_keywords=["options"])
-    fr_opt_row = _find_title_row(ws, ["groupe", "frigorifique", "options"])
+    fr_opt_row_t = _find_title_row(ws, ["groupe", "frigorifique", "options"])
     hy_row = _find_title_row(ws, ["hayon"], exclude_keywords=["options"])
-    hy_opt_row = _find_title_row(ws, ["hayon", "options"])
+    hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
     pub_row = _find_title_row(ws, ["publicite"])
 
-    cab_rows = _region_rows(ws, cab_row, cab_opt_row)
-    cab_opt_rows = _region_rows(ws, cab_opt_row, car_row)
+    # ---------- compute needed rows ----------
+    cab_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 0)
+    cab_opt_needed = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 0)
 
-    car_rows = _region_rows(ws, car_row, car_opt_row)
-    car_opt_rows = _region_rows(ws, car_opt_row, fr_row)
+    car_needed = len(caisse_vals)
+    car_opt_needed = len(caisse_opt_vals)
 
-    fr_rows = _region_rows(ws, fr_row, fr_opt_row)
-    fr_opt_rows = _region_rows(ws, fr_opt_row, hy_row)
+    fr_needed = int(math.ceil(len(gf_vals) / 2.0)) if gf_vals else 0
+    fr_opt_needed = len(gf_opt_vals)
 
-    hy_rows = _region_rows(ws, hy_row, hy_opt_row)
-    hy_opt_rows = _region_rows(ws, hy_opt_row, pub_row)
+    hy_needed = int(math.ceil(len(hay_vals) / 2.0)) if hay_vals else 0
+    hy_opt_needed = len(hay_opt_vals)
 
+    # ---------- expand sections (BOTTOM -> TOP) ----------
+    extras = {}
+    extras["hy_opt"] = _ensure_section_capacity(ws, hy_opt_row_t, pub_row, hy_opt_needed)
+    extras["hy"]     = _ensure_section_capacity(ws, hy_row,     hy_opt_row_t, hy_needed)
+    extras["fr_opt"] = _ensure_section_capacity(ws, fr_opt_row_t, hy_row, fr_opt_needed)
+    extras["fr"]     = _ensure_section_capacity(ws, fr_row,     fr_opt_row_t, fr_needed)
+    extras["car_opt"]= _ensure_section_capacity(ws, car_opt_row_t, fr_row, car_opt_needed)
+    extras["car"]    = _ensure_section_capacity(ws, car_row,    car_opt_row_t, car_needed)
+    extras["cab_opt"]= _ensure_section_capacity(ws, cab_opt_row_t, car_row, cab_opt_needed)
+    extras["cab"]    = _ensure_section_capacity(ws, cab_row,    cab_opt_row_t, cab_needed)
+
+    # ---------- re-locate sections (after insertion) ----------
+    cab_row = _find_title_row(ws, ["cabine"], exclude_keywords=["options"])
+    cab_opt_row_t = _find_title_row(ws, ["cabine", "options"])
+    car_row = _find_title_row(ws, ["carrosserie"], exclude_keywords=["options"])
+    car_opt_row_t = _find_title_row(ws, ["carrosserie", "options"])
+    fr_row = _find_title_row(ws, ["groupe", "frigorifique"], exclude_keywords=["options"])
+    fr_opt_row_t = _find_title_row(ws, ["groupe", "frigorifique", "options"])
+    hy_row = _find_title_row(ws, ["hayon"], exclude_keywords=["options"])
+    hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
+    pub_row = _find_title_row(ws, ["publicite"])
+
+    cab_rows = _region_rows(ws, cab_row, cab_opt_row_t)
+    cab_opt_rows = _region_rows(ws, cab_opt_row_t, car_row)
+
+    car_rows = _region_rows(ws, car_row, car_opt_row_t)
+    car_opt_rows = _region_rows(ws, car_opt_row_t, fr_row)
+
+    fr_rows = _region_rows(ws, fr_row, fr_opt_row_t)
+    fr_opt_rows = _region_rows(ws, fr_opt_row_t, hy_row)
+
+    hy_rows = _region_rows(ws, hy_row, hy_opt_row_t)
+    hy_opt_rows = _region_rows(ws, hy_opt_row_t, pub_row)
+
+    # ---------- columns (FIXED to avoid overwrite) ----------
     colB = column_index_from_string("B")
     colF = column_index_from_string("F")
     colH = column_index_from_string("H")
 
-    # CAB/MOT/CH details (same rows, different cols)
-    fill_region(ws, cab_rows, cab_vals, [colB], mode="auto")
-    fill_region(ws, cab_rows, mot_vals, [colF], mode="auto")
-    fill_region(ws, cab_rows, ch_vals,  [colH], mode="auto")
+    endE = column_index_from_string("E")
+    endG = column_index_from_string("G")
+    endL = column_index_from_string("L")
+
+    # CAB/MOT/CH details (same rows, different blocks)
+    fill_region(ws, cab_rows, cab_vals, [colB], mode="auto", end_cols_override={colB: endE})
+    fill_region(ws, cab_rows, mot_vals, [colF], mode="auto", end_cols_override={colF: endG})
+    fill_region(ws, cab_rows, ch_vals,  [colH], mode="auto", end_cols_override={colH: endL})
 
     # CAB/MOT/CH options
-    fill_region(ws, cab_opt_rows, cab_opt_vals, [colB], mode="auto")
-    fill_region(ws, cab_opt_rows, mot_opt_vals, [colF], mode="auto")
-    fill_region(ws, cab_opt_rows, ch_opt_vals,  [colH], mode="auto")
+    fill_region(ws, cab_opt_rows, cab_opt_vals, [colB], mode="auto", end_cols_override={colB: endE})
+    fill_region(ws, cab_opt_rows, mot_opt_vals, [colF], mode="auto", end_cols_override={colF: endG})
+    fill_region(ws, cab_opt_rows, ch_opt_vals,  [colH], mode="auto", end_cols_override={colH: endL})
 
     # CAISSE full width B->L
-    fill_region(ws, car_rows, caisse_vals, [colB], mode="full")
-    fill_region(ws, car_opt_rows, caisse_opt_vals, [colB], mode="full")
+    fill_region(ws, car_rows, caisse_vals, [colB], mode="full", end_cols_override={colB: endL})
+    fill_region(ws, car_opt_rows, caisse_opt_vals, [colB], mode="full", end_cols_override={colB: endL})
 
-    # FRIGO B then F
-    fill_region(ws, fr_rows, gf_vals, [colB, colF], mode="two_col")
-    fill_region(ws, fr_opt_rows, gf_opt_vals, [colB], mode="full")
+    # FRIGO 2 colonnes: B->E puis F->L
+    fill_region(ws, fr_rows, gf_vals, [colB, colF], mode="two_col",
+                end_cols_override={colB: endE, colF: endL})
+    fill_region(ws, fr_opt_rows, gf_opt_vals, [colB], mode="full",
+                end_cols_override={colB: endL})
 
-    # HAYON B then F
-    fill_region(ws, hy_rows, hay_vals, [colB, colF], mode="two_col")
-    fill_region(ws, hy_opt_rows, hay_opt_vals, [colB], mode="full")
+    # HAYON 2 colonnes: B->E puis F->L
+    fill_region(ws, hy_rows, hay_vals, [colB, colF], mode="two_col",
+                end_cols_override={colB: endE, colF: endL})
+    fill_region(ws, hy_opt_rows, hay_opt_vals, [colB], mode="full",
+                end_cols_override={colB: endL})
 
-    # DIMENSIONS (si tes cellules sont différentes, adapte)
+    # DIMENSIONS (adapte si cellules diff)
     ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
     ws["I6"]  = veh.get("L int \nutile \nsur plinthe")
     ws["I7"]  = veh.get("H int")
@@ -492,10 +602,14 @@ def genere_ft_excel_simple(
     ws["I12"] = veh.get("Volume")
     ws["I13"] = veh.get("palettes 800 x 1200 mm")
 
+    if debug:
+        # laisse une trace dans le fichier (optionnel)
+        ws["A1"] = f"DEBUG inserted: {extras}"
+
     output = BytesIO()
     wb.save(output)
     output.seek(0)
-    return output
+    return output, extras
 
 
 # ----------------- APP -----------------
@@ -567,10 +681,14 @@ with col3:
     show_image(img_carbu_path, "Picto carburant")
 
 st.markdown("---")
-st.subheader("Génération de la fiche technique (simple)")
+st.subheader("Génération de la fiche technique (dynamic)")
+
+debug_mode = st.checkbox("Afficher debug (lignes insérées)", value=False)
 
 if st.button("⚙️ Générer la FT (Excel)"):
-    ft_file = genere_ft_excel_simple(
+    template_bytes = uploaded_template.getvalue() if uploaded_template else None
+
+    ft_file, extras = genere_ft_excel_dynamic(
         veh,
         cab_prod_choice, cab_opt_choice,
         mot_prod_choice, mot_opt_choice,
@@ -578,15 +696,22 @@ if st.button("⚙️ Générer la FT (Excel)"):
         caisse_prod_choice, caisse_opt_choice,
         gf_prod_choice, gf_opt_choice,
         hay_prod_choice, hay_opt_choice,
-        cabines, moteurs, chassis, caisses, frigo, hayons
+        cabines, moteurs, chassis, caisses, frigo, hayons,
+        template_bytes=template_bytes,
+        template_path=TEMPLATE_FALLBACK,
+        debug=debug_mode,
     )
 
     if ft_file is not None:
-        # ⚠️ nom unique pour être sûr d'ouvrir le bon fichier
         import time
         codepf = str(veh.get("Code_PF", "")).strip() or "vehicule"
         filename = f"FT_{codepf}_{APP_VERSION}_{int(time.time())}.xlsx"
+
         st.success("✅ Fiche générée !")
+
+        if debug_mode:
+            st.info(f"Lignes insérées par section : {extras}")
+
         st.download_button(
             label="⬇️ Télécharger la fiche Excel",
             data=ft_file,
