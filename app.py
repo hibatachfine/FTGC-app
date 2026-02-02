@@ -15,7 +15,7 @@ from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils.cell import coordinate_to_tuple
 
-APP_VERSION = "2026-02-02_dynamic_titles_printarea_clearbreaks_shrinkempty"
+APP_VERSION = "2026-02-02_dynamic_pack_footer_clearbreaks_shrinkempty"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -81,6 +81,7 @@ def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
 
 # ----------------- TEXT EXPANSION (LESS RETURNS) -----------------
 def explode_cell_value(val, wrap_width=90):
+    """Découpe les multi-lignes / très longs textes en lignes (wrap large => moins de retours)."""
     if val is None or pd.isna(val):
         return []
     s = str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -204,19 +205,39 @@ def reset_row_heights(ws, rows):
         ws.row_dimensions[r].height = None
 
 def clear_manual_pagebreaks(ws):
-    # ✅ remove manual page breaks (they break after insert_rows)
+    """Supprime les sauts de page manuels du template (sinon ça fait des pages vides après insert_rows)."""
     try:
         ws.row_breaks.brk = []
         ws.col_breaks.brk = []
     except Exception:
         pass
 
-def shrink_empty_rows(ws, max_col_letter="L", empty_height=12.75, from_row=1):
-    # ✅ reduce height of rows that are really empty
-    max_col = column_index_from_string(max_col_letter)
+def row_has_content(ws, r, min_col_letter="B", max_col_letter="L"):
+    """Vrai si la ligne a du contenu dans B..L (on ignore A car souvent c'est juste des marqueurs)."""
+    c1 = column_index_from_string(min_col_letter)
+    c2 = column_index_from_string(max_col_letter)
+    for c in range(c1, c2 + 1):
+        v = ws.cell(r, c).value
+        if v not in (None, ""):
+            return True
+    return False
+
+def last_content_row(ws, min_col_letter="B", max_col_letter="L", up_to_row=None):
+    """Dernière ligne non vide (B..L), jusqu'à up_to_row (sinon ws.max_row)."""
+    end = up_to_row if up_to_row is not None else ws.max_row
+    for r in range(end, 1, -1):
+        if row_has_content(ws, r, min_col_letter, max_col_letter):
+            return r
+    return 1
+
+def shrink_empty_rows(ws, max_col_letter="L", min_col_letter="B", empty_height=12.75, from_row=1):
+    """Réduit la hauteur des lignes vraiment vides (B..L) pour limiter les blancs."""
+    c1 = column_index_from_string(min_col_letter)
+    c2 = column_index_from_string(max_col_letter)
+
     for r in range(from_row, ws.max_row + 1):
         has_val = False
-        for c in range(1, max_col + 1):
+        for c in range(c1, c2 + 1):
             v = ws.cell(r, c).value
             if v not in (None, ""):
                 has_val = True
@@ -243,6 +264,7 @@ def _ensure_merge_row(ws, row, c1, c2):
         pass
 
 def _write_merged(ws, row, col, value):
+    """Ecrit dans la top-left d'une fusion, en conservant l'alignement existant (juste wrap+top)."""
     rng = _merged_range_including(ws, row, col)
     r0, c0 = (rng.min_row, rng.min_col) if rng else (row, col)
     cell = ws.cell(r0, c0)
@@ -250,7 +272,6 @@ def _write_merged(ws, row, col, value):
         return
 
     cell.value = value
-
     al = cell.alignment
     if hasattr(al, "copy"):
         cell.alignment = al.copy(wrap_text=True, vertical="top")
@@ -277,22 +298,19 @@ def _snapshot_row_style(ws, src_row, max_col):
             "protection": copy(src.protection),
             "alignment": copy(src.alignment),
         })
-    height = ws.row_dimensions[src_row].height
-    return snap, height
+    return snap
 
 def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_letter="L"):
     if n_rows <= 0:
         return
     max_col = column_index_from_string(max_col_letter)
-
-    snap, _src_height = _snapshot_row_style(ws, style_src_row, max_col)
+    snap = _snapshot_row_style(ws, style_src_row, max_col)
 
     ws.insert_rows(insert_at_row, amount=n_rows)
 
     for i in range(n_rows):
         r = insert_at_row + i
-        # ✅ do NOT force copied height -> let Excel manage
-        ws.row_dimensions[r].height = None
+        ws.row_dimensions[r].height = None  # important pour éviter gros blancs
         for c in range(1, max_col + 1):
             tgt = ws.cell(r, c)
             tgt.value = None
@@ -310,13 +328,13 @@ def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col
 
     rows = _region_rows(ws, title_row, next_title_row)
     current = len(rows)
-
     if rows_needed <= current:
         return 0
 
     extra = min(rows_needed - current, hard_cap_extra)
     insert_at = next_title_row if next_title_row is not None else (ws.max_row + 1)
 
+    # copier une ligne "milieu" pour éviter les séparateurs épais
     if rows:
         style_src_row = rows[1] if len(rows) > 1 else rows[0]
     else:
@@ -375,21 +393,9 @@ def ensure_merge_row_range(ws, row, col_start_letter, col_end_letter):
     else:
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
 
-def set_print_area_to_used(ws, max_col_letter="L"):
-    max_col = column_index_from_string(max_col_letter)
-
-    last_row = 1
-    for r in range(ws.max_row, 1, -1):
-        found = False
-        for c in range(1, max_col + 1):
-            v = ws.cell(r, c).value
-            if v not in (None, ""):
-                found = True
-                break
-        if found:
-            last_row = r
-            break
-
+def set_print_area_to_used(ws, max_col_letter="L", min_col_letter="B"):
+    """Zone d'impression basée sur le dernier contenu réel dans B..L (ignore A)."""
+    last_row = last_content_row(ws, min_col_letter=min_col_letter, max_col_letter=max_col_letter)
     ws.print_area = f"$A$1:${max_col_letter}${last_row}"
     try:
         ws.page_setup.fitToWidth = 1
@@ -397,13 +403,66 @@ def set_print_area_to_used(ws, max_col_letter="L"):
     except Exception:
         pass
 
+def find_footer_row(ws):
+    """
+    Essaie de repérer la zone "Signature et cachet..." pour la remonter.
+    On cherche des mots-clés dans B..L.
+    """
+    keys = ["signature", "cachet"]
+    max_col = column_index_from_string("L")
+    for r in range(1, ws.max_row + 1):
+        for c in range(2, max_col + 1):  # B..L
+            v = ws.cell(r, c).value
+            if isinstance(v, str):
+                t = _norm(v)
+                if all(k in t for k in keys):
+                    return r
+    return None
+
+def pack_footer_up(ws, footer_row, keep_blank_rows=1, min_col_letter="B", max_col_letter="L"):
+    """
+    Remonte le footer (signature/cachet) juste après le dernier contenu.
+    On supprime un gros bloc de lignes vides (B..L) entre contenu et footer.
+    """
+    if footer_row is None or footer_row <= 5:
+        return 0
+
+    # dernier contenu avant footer
+    content_end = last_content_row(ws, min_col_letter=min_col_letter, max_col_letter=max_col_letter, up_to_row=footer_row - 1)
+    target_footer_row = content_end + keep_blank_rows + 1
+
+    # rien à faire si déjà proche
+    if footer_row - target_footer_row < 5:
+        return 0
+
+    # on ne supprime que si l'intervalle est vide en B..L
+    start_del = target_footer_row
+    end_del = footer_row - 1
+
+    all_blank = True
+    for r in range(start_del, end_del + 1):
+        if row_has_content(ws, r, min_col_letter, max_col_letter):
+            all_blank = False
+            break
+
+    if not all_blank:
+        # au pire on ne pack pas (on évite de supprimer du contenu)
+        return 0
+
+    n = end_del - start_del + 1
+    try:
+        ws.delete_rows(start_del, n)
+        return n
+    except Exception:
+        return 0
+
 # ----------------- DATA BUILDERS -----------------
 def build_values(df: pd.DataFrame, row: pd.Series, code_col: str, wrap_width=90):
     if row is None or df is None or df.empty:
         return []
 
     vals = []
-    for col in df.columns:
+    for col in df.columns:  # ordre Excel
         if str(col).strip() == str(code_col).strip():
             continue
 
@@ -477,7 +536,7 @@ def genere_ft_excel_dynamic(
     ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
     ws.print_title_rows = None
 
-    # ✅ NEW: clear manual page breaks early
+    # ✅ 1) clear manual page breaks
     clear_manual_pagebreaks(ws)
 
     # ---------- build values ----------
@@ -579,7 +638,7 @@ def genere_ft_excel_dynamic(
     hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
     pub_row = _find_title_row(ws, ["publicite"])
 
-    # ✅ fix titles merges
+    # ✅ fix title merges
     if cab_row:
         ensure_merge_row_range(ws, cab_row, "B", "E")
         ensure_merge_row_range(ws, cab_row, "F", "G")
@@ -665,7 +724,15 @@ def genere_ft_excel_dynamic(
     safe_set(ws, "I12", veh.get("Volume"))
     safe_set(ws, "I13", veh.get("palettes 800 x 1200 mm"))
 
-    # ---------- images ----------
+    # ---------- PACK FOOTER (signature/cachet) ----------
+    footer_row = find_footer_row(ws)
+    removed = pack_footer_up(ws, footer_row, keep_blank_rows=1, min_col_letter="B", max_col_letter="L")
+    extras["packed_footer_deleted_rows"] = removed
+
+    # ✅ après delete_rows, on retire les page breaks manuels encore une fois (sécurité)
+    clear_manual_pagebreaks(ws)
+
+    # ---------- images (AFTER layout changes) ----------
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
     img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
@@ -691,15 +758,15 @@ def genere_ft_excel_dynamic(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ✅ print area updated
-    set_print_area_to_used(ws, max_col_letter="L")
+    # ✅ print area based on real content in B..L (ignore A)
+    set_print_area_to_used(ws, max_col_letter="L", min_col_letter="B")
 
-    # ✅ NEW: shrink empty rows (avoid huge blanks/page 2 empty)
-    shrink_empty_rows(ws, max_col_letter="L", empty_height=12.75, from_row=1)
+    # ✅ shrink truly empty rows in B..L (ignore A markers)
+    shrink_empty_rows(ws, max_col_letter="L", min_col_letter="B", empty_height=12.75, from_row=1)
 
     if debug:
         try:
-            safe_set(ws, "A1", f"DEBUG inserted rows: {extras}")
+            safe_set(ws, "A1", f"DEBUG: {extras}")
         except Exception:
             pass
 
@@ -806,7 +873,7 @@ if st.button("⚙️ Générer la FT (Excel)"):
         st.success("✅ Fiche générée !")
 
         if debug_mode:
-            st.info(f"Lignes insérées par section : {extras}")
+            st.info(f"DEBUG : {extras}")
 
         st.download_button(
             label="⬇️ Télécharger la fiche Excel",
