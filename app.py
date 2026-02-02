@@ -15,7 +15,7 @@ from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils.cell import coordinate_to_tuple
 
-APP_VERSION = "2026-02-02_dynamic_sections_printarea_titles_alignment_fixed"
+APP_VERSION = "2026-02-02_dynamic_titles_printarea_clearbreaks_shrinkempty"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -81,16 +81,11 @@ def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
 
 # ----------------- TEXT EXPANSION (LESS RETURNS) -----------------
 def explode_cell_value(val, wrap_width=90):
-    """
-    Transforme une cellule multi-lignes (ou très longue) en liste de lignes.
-    wrap_width élevé => moins de retours à la ligne.
-    """
     if val is None or pd.isna(val):
         return []
     s = str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
     if not s:
         return []
-
     out = []
     for line in s.split("\n"):
         line = line.strip()
@@ -197,7 +192,6 @@ def _merged_range_including(ws, row, col):
     return None
 
 def safe_set(ws, addr, value):
-    """Ecrit même si la cellule est fusionnée (écrit dans la top-left)."""
     r, c = coordinate_to_tuple(addr)
     rng = _merged_range_including(ws, r, c)
     if rng:
@@ -206,9 +200,29 @@ def safe_set(ws, addr, value):
         ws.cell(r, c).value = value
 
 def reset_row_heights(ws, rows):
-    """laisser Excel auto-gérer la hauteur"""
     for r in rows:
         ws.row_dimensions[r].height = None
+
+def clear_manual_pagebreaks(ws):
+    # ✅ remove manual page breaks (they break after insert_rows)
+    try:
+        ws.row_breaks.brk = []
+        ws.col_breaks.brk = []
+    except Exception:
+        pass
+
+def shrink_empty_rows(ws, max_col_letter="L", empty_height=12.75, from_row=1):
+    # ✅ reduce height of rows that are really empty
+    max_col = column_index_from_string(max_col_letter)
+    for r in range(from_row, ws.max_row + 1):
+        has_val = False
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if v not in (None, ""):
+                has_val = True
+                break
+        if not has_val:
+            ws.row_dimensions[r].height = empty_height
 
 def _unmerge_overlapping_row(ws, row, c1, c2):
     for rng in list(ws.merged_cells.ranges):
@@ -229,10 +243,6 @@ def _ensure_merge_row(ws, row, c1, c2):
         pass
 
 def _write_merged(ws, row, col, value):
-    """
-    ✅ Fix police/alignement :
-    on ne remplace pas l'Alignment, on copie l'existant et on active wrap/top.
-    """
     rng = _merged_range_including(ws, row, col)
     r0, c0 = (rng.min_row, rng.min_col) if rng else (row, col)
     cell = ws.cell(r0, c0)
@@ -275,13 +285,14 @@ def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_le
         return
     max_col = column_index_from_string(max_col_letter)
 
-    snap, src_height = _snapshot_row_style(ws, style_src_row, max_col)
+    snap, _src_height = _snapshot_row_style(ws, style_src_row, max_col)
 
     ws.insert_rows(insert_at_row, amount=n_rows)
 
     for i in range(n_rows):
         r = insert_at_row + i
-        ws.row_dimensions[r].height = src_height
+        # ✅ do NOT force copied height -> let Excel manage
+        ws.row_dimensions[r].height = None
         for c in range(1, max_col + 1):
             tgt = ws.cell(r, c)
             tgt.value = None
@@ -294,9 +305,6 @@ def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_le
             tgt.alignment = copy(stl["alignment"])
 
 def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=300):
-    """
-    ✅ Fix bordures : copier une ligne "milieu" (souvent sans séparateurs épais).
-    """
     if title_row is None or rows_needed is None or rows_needed <= 0:
         return 0
 
@@ -340,7 +348,6 @@ def fill_region(ws, rows, values, start_cols, end_cols_override):
             i += 1
     return n, capacity
 
-# -------- NEW: fix titles merges + print area --------
 def ensure_merge_row_range(ws, row, col_start_letter, col_end_letter):
     c1 = column_index_from_string(col_start_letter)
     c2 = column_index_from_string(col_end_letter)
@@ -392,9 +399,6 @@ def set_print_area_to_used(ws, max_col_letter="L"):
 
 # ----------------- DATA BUILDERS -----------------
 def build_values(df: pd.DataFrame, row: pd.Series, code_col: str, wrap_width=90):
-    """
-    ordre strict df.columns + explode multi-lignes/longues valeurs
-    """
     if row is None or df is None or df.empty:
         return []
 
@@ -462,7 +466,6 @@ def genere_ft_excel_dynamic(
     template_path=TEMPLATE_FALLBACK,
     debug=False,
 ):
-    # Load template
     if template_bytes:
         wb = load_workbook(BytesIO(template_bytes), read_only=False, data_only=False)
     else:
@@ -473,6 +476,9 @@ def genere_ft_excel_dynamic(
 
     ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
     ws.print_title_rows = None
+
+    # ✅ NEW: clear manual page breaks early
+    clear_manual_pagebreaks(ws)
 
     # ---------- build values ----------
     code_pf_ref = veh.get("Code_PF", "")
@@ -573,11 +579,11 @@ def genere_ft_excel_dynamic(
     hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
     pub_row = _find_title_row(ws, ["publicite"])
 
-    # ✅ FIX: titles merges (sinon 1 lettre visible)
+    # ✅ fix titles merges
     if cab_row:
-        ensure_merge_row_range(ws, cab_row, "B", "E")  # CABINE
-        ensure_merge_row_range(ws, cab_row, "F", "G")  # MOTEUR
-        ensure_merge_row_range(ws, cab_row, "H", "L")  # CHASSIS
+        ensure_merge_row_range(ws, cab_row, "B", "E")
+        ensure_merge_row_range(ws, cab_row, "F", "G")
+        ensure_merge_row_range(ws, cab_row, "H", "L")
     if car_row:
         ensure_merge_row_range(ws, car_row, "B", "L")
     if fr_row:
@@ -597,11 +603,10 @@ def genere_ft_excel_dynamic(
     hy_rows = _region_rows(ws, hy_row, hy_opt_row_t)
     hy_opt_rows = _region_rows(ws, hy_opt_row_t, pub_row)
 
-    # reset heights (Excel gère mieux)
     for rr in [cab_rows, cab_opt_rows, car_rows, car_opt_rows, fr_rows, fr_opt_rows, hy_rows, hy_opt_rows]:
         reset_row_heights(ws, rr)
 
-    # ---------- write headers (safe for merged cells) ----------
+    # ---------- write headers ----------
     header_map = {
         "code_pays": "C5",
         "Marque": "C6",
@@ -617,7 +622,7 @@ def genere_ft_excel_dynamic(
         if k in veh.index and pd.notna(veh.get(k)):
             safe_set(ws, addr, veh.get(k))
 
-    # ---------- fill sections (fixed blocks) ----------
+    # ---------- fill sections ----------
     colB = column_index_from_string("B")
     colF = column_index_from_string("F")
     colH = column_index_from_string("H")
@@ -643,7 +648,7 @@ def genere_ft_excel_dynamic(
     fill_region(ws, hy_rows, hay_vals, [colB, colF], end_cols_override={colB: endE, colF: endL})
     fill_region(ws, hy_opt_rows, hay_opt_vals, [colB], end_cols_override={colB: endL})
 
-    # ---------- dimensions (safe merged cells) ----------
+    # ---------- dimensions ----------
     safe_set(ws, "I5",  veh.get("W int\n utile \nsur plinthe"))
     safe_set(ws, "I6",  veh.get("L int \nutile \nsur plinthe"))
     safe_set(ws, "I7",  veh.get("H int"))
@@ -660,7 +665,7 @@ def genere_ft_excel_dynamic(
     safe_set(ws, "I12", veh.get("Volume"))
     safe_set(ws, "I13", veh.get("palettes 800 x 1200 mm"))
 
-    # ---------- images (AFTER insertion) ----------
+    # ---------- images ----------
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
     img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
@@ -686,8 +691,11 @@ def genere_ft_excel_dynamic(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ✅ FIX: zone d'impression pour éviter le gris / pages vides
+    # ✅ print area updated
     set_print_area_to_used(ws, max_col_letter="L")
+
+    # ✅ NEW: shrink empty rows (avoid huge blanks/page 2 empty)
+    shrink_empty_rows(ws, max_col_letter="L", empty_height=12.75, from_row=1)
 
     if debug:
         try:
