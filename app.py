@@ -15,7 +15,7 @@ from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils.cell import coordinate_to_tuple
 
-APP_VERSION = "2026-02-02_dynamic_sections_safe_merged_cells_excel_order_clean_layout"
+APP_VERSION = "2026-02-02_dynamic_sections_printarea_titles_alignment_fixed"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -96,7 +96,6 @@ def explode_cell_value(val, wrap_width=90):
         line = line.strip()
         if not line:
             continue
-        # wrap uniquement si vraiment long
         if len(line) > wrap_width * 1.25:
             out.extend(textwrap.wrap(line, width=wrap_width, break_long_words=False))
         else:
@@ -207,7 +206,7 @@ def safe_set(ws, addr, value):
         ws.cell(r, c).value = value
 
 def reset_row_heights(ws, rows):
-    """Modif #3: laisser Excel auto-gérer la hauteur => rendu moins bizarre."""
+    """laisser Excel auto-gérer la hauteur"""
     for r in rows:
         ws.row_dimensions[r].height = None
 
@@ -230,13 +229,23 @@ def _ensure_merge_row(ws, row, c1, c2):
         pass
 
 def _write_merged(ws, row, col, value):
+    """
+    ✅ Fix police/alignement :
+    on ne remplace pas l'Alignment, on copie l'existant et on active wrap/top.
+    """
     rng = _merged_range_including(ws, row, col)
     r0, c0 = (rng.min_row, rng.min_col) if rng else (row, col)
     cell = ws.cell(r0, c0)
     if isinstance(cell, MergedCell):
         return
+
     cell.value = value
-    cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    al = cell.alignment
+    if hasattr(al, "copy"):
+        cell.alignment = al.copy(wrap_text=True, vertical="top")
+    else:
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
 
 def _style_source_cell(ws, row, col):
     cell = ws.cell(row, col)
@@ -266,7 +275,6 @@ def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_le
         return
     max_col = column_index_from_string(max_col_letter)
 
-    # snapshot AVANT insertion
     snap, src_height = _snapshot_row_style(ws, style_src_row, max_col)
 
     ws.insert_rows(insert_at_row, amount=n_rows)
@@ -287,8 +295,7 @@ def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_le
 
 def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=300):
     """
-    Modif #1: Insérer des lignes en copiant le style d'une ligne "milieu" (évite les grosses bordures séparateurs).
-    Insère des lignes JUSTE AVANT next_title_row pour agrandir la section.
+    ✅ Fix bordures : copier une ligne "milieu" (souvent sans séparateurs épais).
     """
     if title_row is None or rows_needed is None or rows_needed <= 0:
         return 0
@@ -302,7 +309,6 @@ def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col
     extra = min(rows_needed - current, hard_cap_extra)
     insert_at = next_title_row if next_title_row is not None else (ws.max_row + 1)
 
-    # ✅ ligne modèle: la 2e ligne si possible (évite les séparateurs)
     if rows:
         style_src_row = rows[1] if len(rows) > 1 else rows[0]
     else:
@@ -317,7 +323,6 @@ def fill_region(ws, rows, values, start_cols, end_cols_override):
     if not values:
         values = []
 
-    # force merges puis écrit
     for r in rows:
         for sc in start_cols:
             endc = end_cols_override.get(sc, sc)
@@ -335,16 +340,66 @@ def fill_region(ws, rows, values, start_cols, end_cols_override):
             i += 1
     return n, capacity
 
+# -------- NEW: fix titles merges + print area --------
+def ensure_merge_row_range(ws, row, col_start_letter, col_end_letter):
+    c1 = column_index_from_string(col_start_letter)
+    c2 = column_index_from_string(col_end_letter)
+
+    txt = None
+    for c in range(c1, c2 + 1):
+        v = ws.cell(row, c).value
+        if isinstance(v, str) and v.strip():
+            txt = v
+            break
+
+    _unmerge_overlapping_row(ws, row, c1, c2)
+    try:
+        ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+    except Exception:
+        pass
+
+    if txt is not None:
+        ws.cell(row, c1).value = txt
+
+    cell = ws.cell(row, c1)
+    al = cell.alignment
+    if hasattr(al, "copy"):
+        cell.alignment = al.copy(horizontal="center", vertical="center", wrap_text=False)
+    else:
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
+def set_print_area_to_used(ws, max_col_letter="L"):
+    max_col = column_index_from_string(max_col_letter)
+
+    last_row = 1
+    for r in range(ws.max_row, 1, -1):
+        found = False
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if v not in (None, ""):
+                found = True
+                break
+        if found:
+            last_row = r
+            break
+
+    ws.print_area = f"$A$1:${max_col_letter}${last_row}"
+    try:
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+    except Exception:
+        pass
+
 # ----------------- DATA BUILDERS -----------------
 def build_values(df: pd.DataFrame, row: pd.Series, code_col: str, wrap_width=90):
     """
-    Modif #2: ordre strict df.columns + explode multi-lignes/longues valeurs (moins de pavés)
+    ordre strict df.columns + explode multi-lignes/longues valeurs
     """
     if row is None or df is None or df.empty:
         return []
 
     vals = []
-    for col in df.columns:  # ✅ ordre Excel
+    for col in df.columns:
         if str(col).strip() == str(code_col).strip():
             continue
 
@@ -454,7 +509,6 @@ def genere_ft_excel_dynamic(
     gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
     hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
 
-    # ✅ ordre Excel + explode (moins de pavés)
     cab_vals     = build_values(cabines, cab_prod_row, cab_codecol, wrap_width=90)
     cab_opt_vals = build_values(cabines, cab_opt_row,  cab_codecol, wrap_width=90)
 
@@ -464,7 +518,7 @@ def genere_ft_excel_dynamic(
     ch_vals      = build_values(chassis, ch_prod_row,  ch_codecol,  wrap_width=90)
     ch_opt_vals  = build_values(chassis, ch_opt_row,   ch_codecol,  wrap_width=90)
 
-    caisse_vals      = build_values(caisses, caisse_prod_row, caisse_codecol, wrap_width=95)  # full width => un peu plus large
+    caisse_vals      = build_values(caisses, caisse_prod_row, caisse_codecol, wrap_width=95)
     caisse_opt_vals  = build_values(caisses, caisse_opt_row,  caisse_codecol, wrap_width=95)
 
     gf_vals      = build_values(frigo, gf_prod_row, gf_codecol, wrap_width=90)
@@ -519,6 +573,18 @@ def genere_ft_excel_dynamic(
     hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
     pub_row = _find_title_row(ws, ["publicite"])
 
+    # ✅ FIX: titles merges (sinon 1 lettre visible)
+    if cab_row:
+        ensure_merge_row_range(ws, cab_row, "B", "E")  # CABINE
+        ensure_merge_row_range(ws, cab_row, "F", "G")  # MOTEUR
+        ensure_merge_row_range(ws, cab_row, "H", "L")  # CHASSIS
+    if car_row:
+        ensure_merge_row_range(ws, car_row, "B", "L")
+    if fr_row:
+        ensure_merge_row_range(ws, fr_row, "B", "L")
+    if hy_row:
+        ensure_merge_row_range(ws, hy_row, "B", "L")
+
     cab_rows = _region_rows(ws, cab_row, cab_opt_row_t)
     cab_opt_rows = _region_rows(ws, cab_opt_row_t, car_row)
 
@@ -531,7 +597,7 @@ def genere_ft_excel_dynamic(
     hy_rows = _region_rows(ws, hy_row, hy_opt_row_t)
     hy_opt_rows = _region_rows(ws, hy_opt_row_t, pub_row)
 
-    # Modif #3: reset heights (Excel gère mieux)
+    # reset heights (Excel gère mieux)
     for rr in [cab_rows, cab_opt_rows, car_rows, car_opt_rows, fr_rows, fr_opt_rows, hy_rows, hy_opt_rows]:
         reset_row_heights(ws, rr)
 
@@ -551,7 +617,7 @@ def genere_ft_excel_dynamic(
         if k in veh.index and pd.notna(veh.get(k)):
             safe_set(ws, addr, veh.get(k))
 
-    # ---------- fill sections (blocks fixed to avoid overwrite) ----------
+    # ---------- fill sections (fixed blocks) ----------
     colB = column_index_from_string("B")
     colF = column_index_from_string("F")
     colH = column_index_from_string("H")
@@ -560,25 +626,20 @@ def genere_ft_excel_dynamic(
     endG = column_index_from_string("G")
     endL = column_index_from_string("L")
 
-    # CAB/MOT/CH details
     fill_region(ws, cab_rows, cab_vals, [colB], end_cols_override={colB: endE})
     fill_region(ws, cab_rows, mot_vals, [colF], end_cols_override={colF: endG})
     fill_region(ws, cab_rows, ch_vals,  [colH], end_cols_override={colH: endL})
 
-    # CAB/MOT/CH options
     fill_region(ws, cab_opt_rows, cab_opt_vals, [colB], end_cols_override={colB: endE})
     fill_region(ws, cab_opt_rows, mot_opt_vals, [colF], end_cols_override={colF: endG})
     fill_region(ws, cab_opt_rows, ch_opt_vals,  [colH], end_cols_override={colH: endL})
 
-    # CAISSE full width
     fill_region(ws, car_rows, caisse_vals, [colB], end_cols_override={colB: endL})
     fill_region(ws, car_opt_rows, caisse_opt_vals, [colB], end_cols_override={colB: endL})
 
-    # FRIGO 2 colonnes : B:E puis F:L
     fill_region(ws, fr_rows, gf_vals, [colB, colF], end_cols_override={colB: endE, colF: endL})
     fill_region(ws, fr_opt_rows, gf_opt_vals, [colB], end_cols_override={colB: endL})
 
-    # HAYON 2 colonnes : B:E puis F:L
     fill_region(ws, hy_rows, hay_vals, [colB, colF], end_cols_override={colB: endE, colF: endL})
     fill_region(ws, hy_opt_rows, hay_opt_vals, [colB], end_cols_override={colB: endL})
 
@@ -599,7 +660,7 @@ def genere_ft_excel_dynamic(
     safe_set(ws, "I12", veh.get("Volume"))
     safe_set(ws, "I13", veh.get("palettes 800 x 1200 mm"))
 
-    # ---------- images (AFTER insertion so anchors are correct) ----------
+    # ---------- images (AFTER insertion) ----------
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
     img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
@@ -624,6 +685,9 @@ def genere_ft_excel_dynamic(
         xl_img_carbu = XLImage(img_carbu_path)
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
+
+    # ✅ FIX: zone d'impression pour éviter le gris / pages vides
+    set_print_area_to_used(ws, max_col_letter="L")
 
     if debug:
         try:
