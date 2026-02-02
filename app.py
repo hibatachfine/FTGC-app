@@ -4,6 +4,7 @@ import os
 import re
 import math
 import unicodedata
+import textwrap
 from io import BytesIO
 from copy import copy
 
@@ -14,7 +15,7 @@ from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils.cell import coordinate_to_tuple
 
-APP_VERSION = "2026-02-02_dynamic_sections_safe_merged_cells_excel_column_order"
+APP_VERSION = "2026-02-02_dynamic_sections_safe_merged_cells_excel_order_clean_layout"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -39,8 +40,7 @@ def _norm(s: str) -> str:
     if s is None:
         return ""
     s = str(s)
-    s = _strip_accents(s)
-    s = s.lower()
+    s = _strip_accents(s).lower()
     s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
     s = s.replace("–", "-").replace("—", "-")
     s = " ".join(s.split())
@@ -78,6 +78,30 @@ def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
     if isinstance(opt_choice, str) and opt_choice not in (None, "", "Tous"):
         opt_code = opt_choice
     return prod_code, opt_code
+
+# ----------------- TEXT EXPANSION (LESS RETURNS) -----------------
+def explode_cell_value(val, wrap_width=90):
+    """
+    Transforme une cellule multi-lignes (ou très longue) en liste de lignes.
+    wrap_width élevé => moins de retours à la ligne.
+    """
+    if val is None or pd.isna(val):
+        return []
+    s = str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not s:
+        return []
+
+    out = []
+    for line in s.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # wrap uniquement si vraiment long
+        if len(line) > wrap_width * 1.25:
+            out.extend(textwrap.wrap(line, width=wrap_width, break_long_words=False))
+        else:
+            out.append(line)
+    return out
 
 # ----------------- IMAGES -----------------
 def resolve_image_path(cell_value, subdir):
@@ -182,6 +206,11 @@ def safe_set(ws, addr, value):
     else:
         ws.cell(r, c).value = value
 
+def reset_row_heights(ws, rows):
+    """Modif #3: laisser Excel auto-gérer la hauteur => rendu moins bizarre."""
+    for r in rows:
+        ws.row_dimensions[r].height = None
+
 def _unmerge_overlapping_row(ws, row, c1, c2):
     for rng in list(ws.merged_cells.ranges):
         if rng.min_row == row and rng.max_row == row:
@@ -258,6 +287,7 @@ def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_le
 
 def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=300):
     """
+    Modif #1: Insérer des lignes en copiant le style d'une ligne "milieu" (évite les grosses bordures séparateurs).
     Insère des lignes JUSTE AVANT next_title_row pour agrandir la section.
     """
     if title_row is None or rows_needed is None or rows_needed <= 0:
@@ -272,8 +302,11 @@ def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col
     extra = min(rows_needed - current, hard_cap_extra)
     insert_at = next_title_row if next_title_row is not None else (ws.max_row + 1)
 
-    # ligne modèle : 1ère ligne de la zone, sinon title_row+1 si possible
-    style_src_row = rows[0] if rows else (title_row + 1 if title_row + 1 <= ws.max_row else title_row)
+    # ✅ ligne modèle: la 2e ligne si possible (évite les séparateurs)
+    if rows:
+        style_src_row = rows[1] if len(rows) > 1 else rows[0]
+    else:
+        style_src_row = title_row + 1 if title_row + 1 <= ws.max_row else title_row
 
     _insert_rows_with_style(ws, insert_at, extra, style_src_row, max_col_letter=max_col_letter)
     return extra
@@ -303,9 +336,9 @@ def fill_region(ws, rows, values, start_cols, end_cols_override):
     return n, capacity
 
 # ----------------- DATA BUILDERS -----------------
-def build_values(df: pd.DataFrame, row: pd.Series, code_col: str):
+def build_values(df: pd.DataFrame, row: pd.Series, code_col: str, wrap_width=90):
     """
-    Construit la liste des valeurs EN RESPECTANT STRICTEMENT l'ordre des colonnes Excel (df.columns).
+    Modif #2: ordre strict df.columns + explode multi-lignes/longues valeurs (moins de pavés)
     """
     if row is None or df is None or df.empty:
         return []
@@ -325,7 +358,7 @@ def build_values(df: pd.DataFrame, row: pd.Series, code_col: str):
         if str(col).strip() == "_":
             continue
 
-        vals.append(str(val).strip())
+        vals.extend(explode_cell_value(val, wrap_width=wrap_width))
     return vals
 
 def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
@@ -421,24 +454,24 @@ def genere_ft_excel_dynamic(
     gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
     hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
 
-    # ✅ ordre Excel = df.columns
-    cab_vals     = build_values(cabines, cab_prod_row, cab_codecol)
-    cab_opt_vals = build_values(cabines, cab_opt_row,  cab_codecol)
+    # ✅ ordre Excel + explode (moins de pavés)
+    cab_vals     = build_values(cabines, cab_prod_row, cab_codecol, wrap_width=90)
+    cab_opt_vals = build_values(cabines, cab_opt_row,  cab_codecol, wrap_width=90)
 
-    mot_vals     = build_values(moteurs, mot_prod_row, mot_codecol)
-    mot_opt_vals = build_values(moteurs, mot_opt_row,  mot_codecol)
+    mot_vals     = build_values(moteurs, mot_prod_row, mot_codecol, wrap_width=90)
+    mot_opt_vals = build_values(moteurs, mot_opt_row,  mot_codecol, wrap_width=90)
 
-    ch_vals      = build_values(chassis, ch_prod_row,  ch_codecol)
-    ch_opt_vals  = build_values(chassis, ch_opt_row,   ch_codecol)
+    ch_vals      = build_values(chassis, ch_prod_row,  ch_codecol,  wrap_width=90)
+    ch_opt_vals  = build_values(chassis, ch_opt_row,   ch_codecol,  wrap_width=90)
 
-    caisse_vals      = build_values(caisses, caisse_prod_row, caisse_codecol)
-    caisse_opt_vals  = build_values(caisses, caisse_opt_row,  caisse_codecol)
+    caisse_vals      = build_values(caisses, caisse_prod_row, caisse_codecol, wrap_width=95)  # full width => un peu plus large
+    caisse_opt_vals  = build_values(caisses, caisse_opt_row,  caisse_codecol, wrap_width=95)
 
-    gf_vals      = build_values(frigo, gf_prod_row, gf_codecol)
-    gf_opt_vals  = build_values(frigo, gf_opt_row,  gf_codecol)
+    gf_vals      = build_values(frigo, gf_prod_row, gf_codecol, wrap_width=90)
+    gf_opt_vals  = build_values(frigo, gf_opt_row,  gf_codecol, wrap_width=90)
 
-    hay_vals     = build_values(hayons, hay_prod_row, hay_codecol)
-    hay_opt_vals = build_values(hayons, hay_opt_row,  hay_codecol)
+    hay_vals     = build_values(hayons, hay_prod_row, hay_codecol, wrap_width=90)
+    hay_opt_vals = build_values(hayons, hay_opt_row,  hay_codecol, wrap_width=90)
 
     # ---------- locate sections (initial) ----------
     cab_row = _find_title_row(ws, ["cabine"], exclude_keywords=["options"])
@@ -497,6 +530,10 @@ def genere_ft_excel_dynamic(
 
     hy_rows = _region_rows(ws, hy_row, hy_opt_row_t)
     hy_opt_rows = _region_rows(ws, hy_opt_row_t, pub_row)
+
+    # Modif #3: reset heights (Excel gère mieux)
+    for rr in [cab_rows, cab_opt_rows, car_rows, car_opt_rows, fr_rows, fr_opt_rows, hy_rows, hy_opt_rows]:
+        reset_row_heights(ws, rr)
 
     # ---------- write headers (safe for merged cells) ----------
     header_map = {
@@ -701,7 +738,7 @@ if st.button("⚙️ Générer la FT (Excel)"):
 
         st.download_button(
             label="⬇️ Télécharger la fiche Excel",
-            data=ft_file,
+            data=ft_file.getvalue(),
             file_name=filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
