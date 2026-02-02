@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import re
 import math
+import unicodedata
 from io import BytesIO
 from copy import copy
 
@@ -11,8 +12,9 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.utils import column_index_from_string
 from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
+from openpyxl.utils.cell import coordinate_to_tuple
 
-APP_VERSION = "2026-02-02_dynamic_sections_no_overwrite"
+APP_VERSION = "2026-02-02_dynamic_sections_safe_merged_cells"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -20,7 +22,6 @@ st.title("Generateur de Fiches Techniques Grands Comptes")
 st.caption("Version de test basée sur bdd_CG.xlsx")
 st.sidebar.info(f"✅ Version: {APP_VERSION}")
 
-# ✅ Template upload
 st.sidebar.markdown("### Template Excel")
 uploaded_template = st.sidebar.file_uploader(
     "Uploader le template (xlsx) à utiliser",
@@ -31,15 +32,19 @@ TEMPLATE_FALLBACK = "FT_Grands_Comptes.xlsx"
 IMG_ROOT = "images"
 
 # ----------------- HELPERS -----------------
+def _strip_accents(s: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")
+
 def _norm(s: str) -> str:
     if s is None:
         return ""
-    s = str(s).lower()
+    s = str(s)
+    s = _strip_accents(s)
+    s = s.lower()
     s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
     s = s.replace("–", "-").replace("—", "-")
     s = " ".join(s.split())
     return s
-
 
 def get_col(df: pd.DataFrame, wanted: str):
     if df is None or wanted is None:
@@ -53,7 +58,6 @@ def get_col(df: pd.DataFrame, wanted: str):
             return c
     return None
 
-
 def clean_unique_list(series: pd.Series):
     if series is None:
         return []
@@ -61,12 +65,10 @@ def clean_unique_list(series: pd.Series):
     s = s[(s != "") & (s.str.lower() != "nan")]
     return sorted(s.unique().tolist())
 
-
 def extract_pf_key(code_pf: str):
     if not isinstance(code_pf, str) or code_pf.strip() == "":
         return ""
     return code_pf.split(" - ")[0].strip()
-
 
 def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
     prod_code = veh_prod
@@ -76,7 +78,6 @@ def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
     if isinstance(opt_choice, str) and opt_choice not in (None, "", "Tous"):
         opt_code = opt_choice
     return prod_code, opt_code
-
 
 # ----------------- IMAGES -----------------
 def resolve_image_path(cell_value, subdir):
@@ -88,7 +89,6 @@ def resolve_image_path(cell_value, subdir):
     val = val.replace("\\", "/")
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
-
 
 def show_image(path_or_url, caption):
     st.caption(caption)
@@ -103,7 +103,6 @@ def show_image(path_or_url, caption):
     else:
         st.warning(f"Image introuvable : {path_or_url}")
 
-
 # ----------------- LOAD DATA -----------------
 @st.cache_data
 def load_data():
@@ -116,7 +115,6 @@ def load_data():
     frigo = pd.read_excel(xls, "FRIGO")
     hayons = pd.read_excel(xls, "HAYONS")
     return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
-
 
 # ----------------- FILTERS -----------------
 def filtre_select(df, col_wanted, label):
@@ -133,9 +131,7 @@ def filtre_select(df, col_wanted, label):
 
     return df, choix
 
-
 filtre_select_options = filtre_select
-
 
 def format_vehicule(row):
     champs = []
@@ -143,7 +139,6 @@ def format_vehicule(row):
         if c in row and pd.notna(row[c]):
             champs.append(str(row[c]))
     return " – ".join(champs)
-
 
 # ----------------- EXCEL HELPERS -----------------
 def _find_title_row(ws, include_keywords, exclude_keywords=None, max_col_letter="L"):
@@ -163,7 +158,6 @@ def _find_title_row(ws, include_keywords, exclude_keywords=None, max_col_letter=
                 return r
     return None
 
-
 def _region_rows(ws, start_row, next_row):
     if start_row is None:
         return []
@@ -173,13 +167,20 @@ def _region_rows(ws, start_row, next_row):
         return []
     return list(range(start, end + 1))
 
-
 def _merged_range_including(ws, row, col):
     for rng in ws.merged_cells.ranges:
         if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
             return rng
     return None
 
+def safe_set(ws, addr, value):
+    """Ecrit même si la cellule est fusionnée (écrit dans la top-left)."""
+    r, c = coordinate_to_tuple(addr)
+    rng = _merged_range_including(ws, r, c)
+    if rng:
+        ws.cell(rng.min_row, rng.min_col).value = value
+    else:
+        ws.cell(r, c).value = value
 
 def _unmerge_overlapping_row(ws, row, c1, c2):
     for rng in list(ws.merged_cells.ranges):
@@ -190,7 +191,6 @@ def _unmerge_overlapping_row(ws, row, c1, c2):
                 except Exception:
                     pass
 
-
 def _ensure_merge_row(ws, row, c1, c2):
     if c2 <= c1:
         return
@@ -199,7 +199,6 @@ def _ensure_merge_row(ws, row, c1, c2):
         ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
     except Exception:
         pass
-
 
 def _write_merged(ws, row, col, value):
     rng = _merged_range_including(ws, row, col)
@@ -210,7 +209,6 @@ def _write_merged(ws, row, col, value):
     cell.value = value
     cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-
 def _style_source_cell(ws, row, col):
     cell = ws.cell(row, col)
     if isinstance(cell, MergedCell):
@@ -219,40 +217,50 @@ def _style_source_cell(ws, row, col):
             return ws.cell(rng.min_row, rng.min_col)
     return cell
 
+def _snapshot_row_style(ws, src_row, max_col):
+    snap = []
+    for c in range(1, max_col + 1):
+        src = _style_source_cell(ws, src_row, c)
+        snap.append({
+            "font": copy(src.font),
+            "border": copy(src.border),
+            "fill": copy(src.fill),
+            "number_format": src.number_format,
+            "protection": copy(src.protection),
+            "alignment": copy(src.alignment),
+        })
+    height = ws.row_dimensions[src_row].height
+    return snap, height
 
 def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_letter="L"):
-    if n_rows <= 0 or style_src_row is None:
+    if n_rows <= 0:
         return
-
     max_col = column_index_from_string(max_col_letter)
+
+    # snapshot AVANT insertion
+    snap, src_height = _snapshot_row_style(ws, style_src_row, max_col)
+
     ws.insert_rows(insert_at_row, amount=n_rows)
 
-    # copie format ligne par ligne
     for i in range(n_rows):
         r = insert_at_row + i
-        ws.row_dimensions[r].height = ws.row_dimensions[style_src_row].height
-
+        ws.row_dimensions[r].height = src_height
         for c in range(1, max_col + 1):
-            src = _style_source_cell(ws, style_src_row, c)
             tgt = ws.cell(r, c)
             tgt.value = None
-            tgt.font = copy(src.font)
-            tgt.border = copy(src.border)
-            tgt.fill = copy(src.fill)
-            tgt.number_format = src.number_format
-            tgt.protection = copy(src.protection)
-            tgt.alignment = copy(src.alignment)
+            stl = snap[c - 1]
+            tgt.font = copy(stl["font"])
+            tgt.border = copy(stl["border"])
+            tgt.fill = copy(stl["fill"])
+            tgt.number_format = stl["number_format"]
+            tgt.protection = copy(stl["protection"])
+            tgt.alignment = copy(stl["alignment"])
 
-
-def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=250):
+def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=300):
     """
     Insère des lignes JUSTE AVANT next_title_row pour agrandir la section.
-    Process bottom->top recommandé.
     """
-    if title_row is None:
-        return 0
-
-    if rows_needed is None or rows_needed <= 0:
+    if title_row is None or rows_needed is None or rows_needed <= 0:
         return 0
 
     rows = _region_rows(ws, title_row, next_title_row)
@@ -261,53 +269,26 @@ def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col
     if rows_needed <= current:
         return 0
 
-    extra = rows_needed - current
-    if extra > hard_cap_extra:
-        extra = hard_cap_extra
-
+    extra = min(rows_needed - current, hard_cap_extra)
     insert_at = next_title_row if next_title_row is not None else (ws.max_row + 1)
-    style_src_row = rows[0] if rows else (title_row + 1)
+
+    # ligne modèle : 1ère ligne de la zone, sinon title_row+1 si possible
+    style_src_row = rows[0] if rows else (title_row + 1 if title_row + 1 <= ws.max_row else title_row)
 
     _insert_rows_with_style(ws, insert_at, extra, style_src_row, max_col_letter=max_col_letter)
     return extra
 
-
-def fill_region(ws, rows, values, start_cols, mode="auto", end_cols_override=None):
+def fill_region(ws, rows, values, start_cols, end_cols_override):
     if not rows:
         return 0, 0
+    if not values:
+        values = []
 
-    default_full_end = column_index_from_string("L")
-    default_left_end = column_index_from_string("E")
-    default_right_end = column_index_from_string("L")
-
-    ends = {}
-
-    # override prioritaire
-    if end_cols_override:
-        for sc in start_cols:
-            if sc in end_cols_override:
-                ends[sc] = end_cols_override[sc]
-
-    # fallback logique existante
-    if mode == "full" or (mode == "auto" and len(start_cols) == 1):
-        sc = start_cols[0]
-        if sc not in ends:
-            ends[sc] = default_full_end
-    else:
-        for sc in start_cols:
-            if sc in ends:
-                continue
-            if column_index_from_string("B") == sc:
-                ends[sc] = default_left_end
-            elif column_index_from_string("F") == sc:
-                ends[sc] = default_right_end
-            else:
-                ends[sc] = default_full_end
-
-    # force merges (ligne par ligne)
+    # force merges puis écrit
     for r in rows:
         for sc in start_cols:
-            _ensure_merge_row(ws, r, sc, ends.get(sc, sc))
+            endc = end_cols_override.get(sc, sc)
+            _ensure_merge_row(ws, r, sc, endc)
 
     capacity = len(rows) * len(start_cols)
     n = min(len(values), capacity)
@@ -319,9 +300,7 @@ def fill_region(ws, rows, values, start_cols, mode="auto", end_cols_override=Non
                 return n, capacity
             _write_merged(ws, r, sc, values[i])
             i += 1
-
     return n, capacity
-
 
 # ----------------- DATA BUILDERS -----------------
 def build_values(row, code_col):
@@ -340,7 +319,6 @@ def build_values(row, code_col):
             continue
         vals.append(str(val).strip())
     return vals
-
 
 def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
     if not isinstance(code, str) or code.strip() == "" or code == "Tous":
@@ -374,7 +352,6 @@ def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
 
     return None
 
-
 # ----------------- EXCEL GENERATION (DYNAMIC) -----------------
 def genere_ft_excel_dynamic(
     veh,
@@ -395,7 +372,7 @@ def genere_ft_excel_dynamic(
     else:
         if not os.path.exists(template_path):
             st.error(f"Template introuvable : {template_path}")
-            return None
+            return None, {}
         wb = load_workbook(template_path, read_only=False, data_only=False)
 
     ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
@@ -450,48 +427,6 @@ def genere_ft_excel_dynamic(
     hay_vals = build_values(hay_prod_row, hay_codecol)
     hay_opt_vals = build_values(hay_opt_row, hay_codecol)
 
-    # ---------- header mapping ----------
-    header_map = {
-        "code_pays": "C5",
-        "Marque": "C6",
-        "Modele": "C7",
-        "Code_PF": "C8",
-        "Standard_PF": "C9",
-        "catalogue_1\n PF": "C10",
-        "catalogue_2\nST": "C11",
-        "catalogue_3\nZR": "C12",
-        "catalogue_3\n LIBRE": "C12",
-    }
-    for k, cell in header_map.items():
-        if k in veh.index and pd.notna(veh.get(k)):
-            ws[cell] = veh.get(k)
-
-    # ---------- images ----------
-    img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
-    img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
-    img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
-
-    logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
-    if os.path.exists(logo_pf_path):
-        xl_logo = XLImage(logo_pf_path)
-        xl_logo.anchor = "B2"
-        ws.add_image(xl_logo)
-
-    if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
-        xl_img_veh = XLImage(img_veh_path)
-        xl_img_veh.anchor = "B15"
-        ws.add_image(xl_img_veh)
-
-    if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
-        xl_img_client = XLImage(img_client_path)
-        xl_img_client.anchor = "H2"
-        ws.add_image(xl_img_client)
-
-    if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
-        xl_img_carbu = XLImage(img_carbu_path)
-        xl_img_carbu.anchor = "H15"
-        ws.add_image(xl_img_carbu)
-
     # ---------- locate sections (initial) ----------
     cab_row = _find_title_row(ws, ["cabine"], exclude_keywords=["options"])
     cab_opt_row_t = _find_title_row(ws, ["cabine", "options"])
@@ -501,7 +436,7 @@ def genere_ft_excel_dynamic(
     fr_opt_row_t = _find_title_row(ws, ["groupe", "frigorifique", "options"])
     hy_row = _find_title_row(ws, ["hayon"], exclude_keywords=["options"])
     hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
-    pub_row = _find_title_row(ws, ["publicite"])
+    pub_row = _find_title_row(ws, ["publicite"])  # publicite / publicité
 
     # ---------- compute needed rows ----------
     cab_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 0)
@@ -550,7 +485,23 @@ def genere_ft_excel_dynamic(
     hy_rows = _region_rows(ws, hy_row, hy_opt_row_t)
     hy_opt_rows = _region_rows(ws, hy_opt_row_t, pub_row)
 
-    # ---------- columns (FIXED to avoid overwrite) ----------
+    # ---------- write headers (safe for merged cells) ----------
+    header_map = {
+        "code_pays": "C5",
+        "Marque": "C6",
+        "Modele": "C7",
+        "Code_PF": "C8",
+        "Standard_PF": "C9",
+        "catalogue_1\n PF": "C10",
+        "catalogue_2\nST": "C11",
+        "catalogue_3\nZR": "C12",
+        "catalogue_3\n LIBRE": "C12",
+    }
+    for k, addr in header_map.items():
+        if k in veh.index and pd.notna(veh.get(k)):
+            safe_set(ws, addr, veh.get(k))
+
+    # ---------- fill sections (blocks fixed to avoid overwrite) ----------
     colB = column_index_from_string("B")
     colF = column_index_from_string("F")
     colH = column_index_from_string("H")
@@ -559,58 +510,82 @@ def genere_ft_excel_dynamic(
     endG = column_index_from_string("G")
     endL = column_index_from_string("L")
 
-    # CAB/MOT/CH details (same rows, different blocks)
-    fill_region(ws, cab_rows, cab_vals, [colB], mode="auto", end_cols_override={colB: endE})
-    fill_region(ws, cab_rows, mot_vals, [colF], mode="auto", end_cols_override={colF: endG})
-    fill_region(ws, cab_rows, ch_vals,  [colH], mode="auto", end_cols_override={colH: endL})
+    # CAB/MOT/CH details
+    fill_region(ws, cab_rows, cab_vals, [colB], end_cols_override={colB: endE})
+    fill_region(ws, cab_rows, mot_vals, [colF], end_cols_override={colF: endG})
+    fill_region(ws, cab_rows, ch_vals,  [colH], end_cols_override={colH: endL})
 
     # CAB/MOT/CH options
-    fill_region(ws, cab_opt_rows, cab_opt_vals, [colB], mode="auto", end_cols_override={colB: endE})
-    fill_region(ws, cab_opt_rows, mot_opt_vals, [colF], mode="auto", end_cols_override={colF: endG})
-    fill_region(ws, cab_opt_rows, ch_opt_vals,  [colH], mode="auto", end_cols_override={colH: endL})
+    fill_region(ws, cab_opt_rows, cab_opt_vals, [colB], end_cols_override={colB: endE})
+    fill_region(ws, cab_opt_rows, mot_opt_vals, [colF], end_cols_override={colF: endG})
+    fill_region(ws, cab_opt_rows, ch_opt_vals,  [colH], end_cols_override={colH: endL})
 
-    # CAISSE full width B->L
-    fill_region(ws, car_rows, caisse_vals, [colB], mode="full", end_cols_override={colB: endL})
-    fill_region(ws, car_opt_rows, caisse_opt_vals, [colB], mode="full", end_cols_override={colB: endL})
+    # CAISSE full width
+    fill_region(ws, car_rows, caisse_vals, [colB], end_cols_override={colB: endL})
+    fill_region(ws, car_opt_rows, caisse_opt_vals, [colB], end_cols_override={colB: endL})
 
-    # FRIGO 2 colonnes: B->E puis F->L
-    fill_region(ws, fr_rows, gf_vals, [colB, colF], mode="two_col",
-                end_cols_override={colB: endE, colF: endL})
-    fill_region(ws, fr_opt_rows, gf_opt_vals, [colB], mode="full",
-                end_cols_override={colB: endL})
+    # FRIGO 2 colonnes : B:E puis F:L
+    fill_region(ws, fr_rows, gf_vals, [colB, colF], end_cols_override={colB: endE, colF: endL})
+    fill_region(ws, fr_opt_rows, gf_opt_vals, [colB], end_cols_override={colB: endL})
 
-    # HAYON 2 colonnes: B->E puis F->L
-    fill_region(ws, hy_rows, hay_vals, [colB, colF], mode="two_col",
-                end_cols_override={colB: endE, colF: endL})
-    fill_region(ws, hy_opt_rows, hay_opt_vals, [colB], mode="full",
-                end_cols_override={colB: endL})
+    # HAYON 2 colonnes : B:E puis F:L
+    fill_region(ws, hy_rows, hay_vals, [colB, colF], end_cols_override={colB: endE, colF: endL})
+    fill_region(ws, hy_opt_rows, hay_opt_vals, [colB], end_cols_override={colB: endL})
 
-    # DIMENSIONS (adapte si cellules diff)
-    ws["I5"]  = veh.get("W int\n utile \nsur plinthe")
-    ws["I6"]  = veh.get("L int \nutile \nsur plinthe")
-    ws["I7"]  = veh.get("H int")
-    ws["I8"]  = veh.get("H")
+    # ---------- dimensions (safe merged cells) ----------
+    safe_set(ws, "I5",  veh.get("W int\n utile \nsur plinthe"))
+    safe_set(ws, "I6",  veh.get("L int \nutile \nsur plinthe"))
+    safe_set(ws, "I7",  veh.get("H int"))
+    safe_set(ws, "I8",  veh.get("H"))
 
-    ws["K4"]  = veh.get("L")
-    ws["K5"]  = veh.get("Z")
-    ws["K6"]  = veh.get("Hc")
-    ws["K7"]  = veh.get("F")
-    ws["K8"]  = veh.get("X")
+    safe_set(ws, "K4",  veh.get("L"))
+    safe_set(ws, "K5",  veh.get("Z"))
+    safe_set(ws, "K6",  veh.get("Hc"))
+    safe_set(ws, "K7",  veh.get("F"))
+    safe_set(ws, "K8",  veh.get("X"))
 
-    ws["I10"] = veh.get("PTAC")
-    ws["I11"] = veh.get("CU")
-    ws["I12"] = veh.get("Volume")
-    ws["I13"] = veh.get("palettes 800 x 1200 mm")
+    safe_set(ws, "I10", veh.get("PTAC"))
+    safe_set(ws, "I11", veh.get("CU"))
+    safe_set(ws, "I12", veh.get("Volume"))
+    safe_set(ws, "I13", veh.get("palettes 800 x 1200 mm"))
+
+    # ---------- images (AFTER insertion so anchors are correct) ----------
+    img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
+    img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
+    img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
+
+    logo_pf_path = os.path.join(IMG_ROOT, "logo_pf.png")
+    if os.path.exists(logo_pf_path):
+        xl_logo = XLImage(logo_pf_path)
+        xl_logo.anchor = "B2"
+        ws.add_image(xl_logo)
+
+    if img_veh_path and isinstance(img_veh_path, str) and os.path.exists(img_veh_path):
+        xl_img_veh = XLImage(img_veh_path)
+        xl_img_veh.anchor = "B15"
+        ws.add_image(xl_img_veh)
+
+    if img_client_path and isinstance(img_client_path, str) and os.path.exists(img_client_path):
+        xl_img_client = XLImage(img_client_path)
+        xl_img_client.anchor = "H2"
+        ws.add_image(xl_img_client)
+
+    if img_carbu_path and isinstance(img_carbu_path, str) and os.path.exists(img_carbu_path):
+        xl_img_carbu = XLImage(img_carbu_path)
+        xl_img_carbu.anchor = "H15"
+        ws.add_image(xl_img_carbu)
 
     if debug:
-        # laisse une trace dans le fichier (optionnel)
-        ws["A1"] = f"DEBUG inserted: {extras}"
+        # Optionnel : trace
+        try:
+            safe_set(ws, "A1", f"DEBUG inserted rows: {extras}")
+        except Exception:
+            pass
 
     output = BytesIO()
     wb.save(output)
     output.seek(0)
     return output, extras
-
 
 # ----------------- APP -----------------
 vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
