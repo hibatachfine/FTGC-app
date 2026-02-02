@@ -14,7 +14,7 @@ from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils.cell import coordinate_to_tuple
 
-APP_VERSION = "2026-02-02_dynamic_sections_safe_merged_cells"
+APP_VERSION = "2026-02-02_dynamic_sections_safe_merged_cells_excel_column_order"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
@@ -303,20 +303,28 @@ def fill_region(ws, rows, values, start_cols, end_cols_override):
     return n, capacity
 
 # ----------------- DATA BUILDERS -----------------
-def build_values(row, code_col):
-    if row is None:
+def build_values(df: pd.DataFrame, row: pd.Series, code_col: str):
+    """
+    Construit la liste des valeurs EN RESPECTANT STRICTEMENT l'ordre des colonnes Excel (df.columns).
+    """
+    if row is None or df is None or df.empty:
         return []
+
     vals = []
-    for col, val in row.items():
+    for col in df.columns:  # ✅ ordre Excel
         if str(col).strip() == str(code_col).strip():
             continue
+
+        val = row.get(col, None)
         if pd.isna(val) or str(val).strip() == "":
             continue
+
         name_lower = _norm(col)
         if ("produit" in name_lower and "option" in name_lower) or name_lower.startswith("zone libre"):
             continue
         if str(col).strip() == "_":
             continue
+
         vals.append(str(val).strip())
     return vals
 
@@ -413,19 +421,24 @@ def genere_ft_excel_dynamic(
     gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
     hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
 
-    cab_vals = build_values(cab_prod_row, cab_codecol)
-    cab_opt_vals = build_values(cab_opt_row, cab_codecol)
-    mot_vals = build_values(mot_prod_row, mot_codecol)
-    mot_opt_vals = build_values(mot_opt_row, mot_codecol)
-    ch_vals = build_values(ch_prod_row, ch_codecol)
-    ch_opt_vals = build_values(ch_opt_row, ch_codecol)
+    # ✅ ordre Excel = df.columns
+    cab_vals     = build_values(cabines, cab_prod_row, cab_codecol)
+    cab_opt_vals = build_values(cabines, cab_opt_row,  cab_codecol)
 
-    caisse_vals = build_values(caisse_prod_row, caisse_codecol)
-    caisse_opt_vals = build_values(caisse_opt_row, caisse_codecol)
-    gf_vals = build_values(gf_prod_row, gf_codecol)
-    gf_opt_vals = build_values(gf_opt_row, gf_codecol)
-    hay_vals = build_values(hay_prod_row, hay_codecol)
-    hay_opt_vals = build_values(hay_opt_row, hay_codecol)
+    mot_vals     = build_values(moteurs, mot_prod_row, mot_codecol)
+    mot_opt_vals = build_values(moteurs, mot_opt_row,  mot_codecol)
+
+    ch_vals      = build_values(chassis, ch_prod_row,  ch_codecol)
+    ch_opt_vals  = build_values(chassis, ch_opt_row,   ch_codecol)
+
+    caisse_vals      = build_values(caisses, caisse_prod_row, caisse_codecol)
+    caisse_opt_vals  = build_values(caisses, caisse_opt_row,  caisse_codecol)
+
+    gf_vals      = build_values(frigo, gf_prod_row, gf_codecol)
+    gf_opt_vals  = build_values(frigo, gf_opt_row,  gf_codecol)
+
+    hay_vals     = build_values(hayons, hay_prod_row, hay_codecol)
+    hay_opt_vals = build_values(hayons, hay_opt_row,  hay_codecol)
 
     # ---------- locate sections (initial) ----------
     cab_row = _find_title_row(ws, ["cabine"], exclude_keywords=["options"])
@@ -436,7 +449,7 @@ def genere_ft_excel_dynamic(
     fr_opt_row_t = _find_title_row(ws, ["groupe", "frigorifique", "options"])
     hy_row = _find_title_row(ws, ["hayon"], exclude_keywords=["options"])
     hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
-    pub_row = _find_title_row(ws, ["publicite"])  # publicite / publicité
+    pub_row = _find_title_row(ws, ["publicite"])
 
     # ---------- compute needed rows ----------
     cab_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 0)
@@ -576,7 +589,6 @@ def genere_ft_excel_dynamic(
         ws.add_image(xl_img_carbu)
 
     if debug:
-        # Optionnel : trace
         try:
             safe_set(ws, "A1", f"DEBUG inserted rows: {extras}")
         except Exception:
