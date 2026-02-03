@@ -14,13 +14,14 @@ from openpyxl.utils import column_index_from_string
 from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils.cell import coordinate_to_tuple
+from openpyxl.worksheet.pagebreak import Break
 
-APP_VERSION = "2026-02-02_dynamic_pack_footer_clearbreaks_shrinkempty"
+APP_VERSION = "2026-02-03_template_layout_bullets_options_footer_break"
 
 # ----------------- CONFIG APP -----------------
 st.set_page_config(page_title="FT Grands Comptes", page_icon="🚚", layout="wide")
-st.title("Generateur de Fiches Techniques Grands Comptes")
-st.caption("Version de test basée sur bdd_CG.xlsx")
+st.title("Générateur de Fiches Techniques Grands Comptes")
+st.caption("Basé sur bdd_CG.xlsx + template FT_Grands_Comptes.xlsx")
 st.sidebar.info(f"✅ Version: {APP_VERSION}")
 
 st.sidebar.markdown("### Template Excel")
@@ -32,9 +33,11 @@ uploaded_template = st.sidebar.file_uploader(
 TEMPLATE_FALLBACK = "FT_Grands_Comptes.xlsx"
 IMG_ROOT = "images"
 
+
 # ----------------- HELPERS -----------------
 def _strip_accents(s: str) -> str:
     return "".join(ch for ch in unicodedata.normalize("NFD", s) if unicodedata.category(ch) != "Mn")
+
 
 def _norm(s: str) -> str:
     if s is None:
@@ -45,6 +48,7 @@ def _norm(s: str) -> str:
     s = s.replace("–", "-").replace("—", "-")
     s = " ".join(s.split())
     return s
+
 
 def get_col(df: pd.DataFrame, wanted: str):
     if df is None or wanted is None:
@@ -58,6 +62,7 @@ def get_col(df: pd.DataFrame, wanted: str):
             return c
     return None
 
+
 def clean_unique_list(series: pd.Series):
     if series is None:
         return []
@@ -65,10 +70,12 @@ def clean_unique_list(series: pd.Series):
     s = s[(s != "") & (s.str.lower() != "nan")]
     return sorted(s.unique().tolist())
 
+
 def extract_pf_key(code_pf: str):
     if not isinstance(code_pf, str) or code_pf.strip() == "":
         return ""
     return code_pf.split(" - ")[0].strip()
+
 
 def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
     prod_code = veh_prod
@@ -79,9 +86,13 @@ def choose_codes(prod_choice, opt_choice, veh_prod, veh_opt):
         opt_code = opt_choice
     return prod_code, opt_code
 
-# ----------------- TEXT EXPANSION (LESS RETURNS) -----------------
-def explode_cell_value(val, wrap_width=90):
-    """Découpe les multi-lignes / très longs textes en lignes (wrap large => moins de retours)."""
+
+def explode_cell_value(val):
+    """
+    ✅ Important pour ton rendu :
+    - on découpe UNIQUEMENT sur les retours à la ligne
+    - pas de wrap automatique => pas de "lignes vides bizarres"
+    """
     if val is None or pd.isna(val):
         return []
     s = str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -90,13 +101,10 @@ def explode_cell_value(val, wrap_width=90):
     out = []
     for line in s.split("\n"):
         line = line.strip()
-        if not line:
-            continue
-        if len(line) > wrap_width * 1.25:
-            out.extend(textwrap.wrap(line, width=wrap_width, break_long_words=False))
-        else:
+        if line:
             out.append(line)
     return out
+
 
 # ----------------- IMAGES -----------------
 def resolve_image_path(cell_value, subdir):
@@ -108,6 +116,7 @@ def resolve_image_path(cell_value, subdir):
     val = val.replace("\\", "/")
     filename = os.path.basename(val)
     return os.path.join(IMG_ROOT, subdir, filename)
+
 
 def show_image(path_or_url, caption):
     st.caption(caption)
@@ -122,6 +131,7 @@ def show_image(path_or_url, caption):
     else:
         st.warning(f"Image introuvable : {path_or_url}")
 
+
 # ----------------- LOAD DATA -----------------
 @st.cache_data
 def load_data():
@@ -134,6 +144,7 @@ def load_data():
     frigo = pd.read_excel(xls, "FRIGO")
     hayons = pd.read_excel(xls, "HAYONS")
     return vehicules, cabines, moteurs, chassis, caisses, frigo, hayons
+
 
 # ----------------- FILTERS -----------------
 def filtre_select(df, col_wanted, label):
@@ -150,7 +161,9 @@ def filtre_select(df, col_wanted, label):
 
     return df, choix
 
+
 filtre_select_options = filtre_select
+
 
 def format_vehicule(row):
     champs = []
@@ -158,6 +171,7 @@ def format_vehicule(row):
         if c in row and pd.notna(row[c]):
             champs.append(str(row[c]))
     return " – ".join(champs)
+
 
 # ----------------- EXCEL HELPERS -----------------
 def _find_title_row(ws, include_keywords, exclude_keywords=None, max_col_letter="L"):
@@ -177,6 +191,7 @@ def _find_title_row(ws, include_keywords, exclude_keywords=None, max_col_letter=
                 return r
     return None
 
+
 def _region_rows(ws, start_row, next_row):
     if start_row is None:
         return []
@@ -186,11 +201,13 @@ def _region_rows(ws, start_row, next_row):
         return []
     return list(range(start, end + 1))
 
+
 def _merged_range_including(ws, row, col):
     for rng in ws.merged_cells.ranges:
         if rng.min_row <= row <= rng.max_row and rng.min_col <= col <= rng.max_col:
             return rng
     return None
+
 
 def safe_set(ws, addr, value):
     r, c = coordinate_to_tuple(addr)
@@ -200,97 +217,26 @@ def safe_set(ws, addr, value):
     else:
         ws.cell(r, c).value = value
 
-def reset_row_heights(ws, rows):
-    for r in rows:
-        ws.row_dimensions[r].height = None
 
 def clear_manual_pagebreaks(ws):
-    """Supprime les sauts de page manuels du template (sinon ça fait des pages vides après insert_rows)."""
     try:
         ws.row_breaks.brk = []
         ws.col_breaks.brk = []
     except Exception:
         pass
 
-def row_has_content(ws, r, min_col_letter="B", max_col_letter="L"):
-    """Vrai si la ligne a du contenu dans B..L (on ignore A car souvent c'est juste des marqueurs)."""
-    c1 = column_index_from_string(min_col_letter)
-    c2 = column_index_from_string(max_col_letter)
-    for c in range(c1, c2 + 1):
-        v = ws.cell(r, c).value
-        if v not in (None, ""):
-            return True
-    return False
 
-def last_content_row(ws, min_col_letter="B", max_col_letter="L", up_to_row=None):
-    """Dernière ligne non vide (B..L), jusqu'à up_to_row (sinon ws.max_row)."""
-    end = up_to_row if up_to_row is not None else ws.max_row
-    for r in range(end, 1, -1):
-        if row_has_content(ws, r, min_col_letter, max_col_letter):
-            return r
-    return 1
+def _is_marker_value(v):
+    return isinstance(v, str) and v.strip() in {"•", "·", "●", "▪", "◦"}
 
-def shrink_empty_rows(ws, max_col_letter="L", min_col_letter="B", empty_height=12.75, from_row=1):
-    """Réduit la hauteur des lignes vraiment vides (B..L) pour limiter les blancs."""
-    c1 = column_index_from_string(min_col_letter)
-    c2 = column_index_from_string(max_col_letter)
 
-    for r in range(from_row, ws.max_row + 1):
-        has_val = False
-        for c in range(c1, c2 + 1):
-            v = ws.cell(r, c).value
-            if v not in (None, ""):
-                has_val = True
-                break
-        if not has_val:
-            ws.row_dimensions[r].height = empty_height
-
-def _unmerge_overlapping_row(ws, row, c1, c2):
-    for rng in list(ws.merged_cells.ranges):
-        if rng.min_row == row and rng.max_row == row:
-            if not (rng.max_col < c1 or rng.min_col > c2):
-                try:
-                    ws.unmerge_cells(str(rng))
-                except Exception:
-                    pass
-
-def _ensure_merge_row(ws, row, c1, c2):
-    if c2 <= c1:
-        return
-    _unmerge_overlapping_row(ws, row, c1, c2)
-    try:
-        ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
-    except Exception:
-        pass
-
-def _write_merged(ws, row, col, value):
-    """Ecrit dans la top-left d'une fusion, en conservant l'alignement existant (juste wrap+top)."""
-    rng = _merged_range_including(ws, row, col)
-    r0, c0 = (rng.min_row, rng.min_col) if rng else (row, col)
-    cell = ws.cell(r0, c0)
-    if isinstance(cell, MergedCell):
-        return
-
-    cell.value = value
-    al = cell.alignment
-    if hasattr(al, "copy"):
-        cell.alignment = al.copy(wrap_text=True, vertical="top")
-    else:
-        cell.alignment = Alignment(wrap_text=True, vertical="top")
-
-def _style_source_cell(ws, row, col):
-    cell = ws.cell(row, col)
-    if isinstance(cell, MergedCell):
-        rng = _merged_range_including(ws, row, col)
-        if rng:
-            return ws.cell(rng.min_row, rng.min_col)
-    return cell
-
-def _snapshot_row_style(ws, src_row, max_col):
+def _snapshot_row(ws, src_row, max_col_letter="L"):
+    max_col = column_index_from_string(max_col_letter)
     snap = []
     for c in range(1, max_col + 1):
-        src = _style_source_cell(ws, src_row, c)
+        src = ws.cell(src_row, c)
         snap.append({
+            "value": src.value if _is_marker_value(src.value) else None,  # ✅ on garde les "•"
             "font": copy(src.font),
             "border": copy(src.border),
             "fill": copy(src.fill),
@@ -300,21 +246,22 @@ def _snapshot_row_style(ws, src_row, max_col):
         })
     return snap
 
+
 def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_letter="L"):
     if n_rows <= 0:
         return
     max_col = column_index_from_string(max_col_letter)
-    snap = _snapshot_row_style(ws, style_src_row, max_col)
+    snap = _snapshot_row(ws, style_src_row, max_col_letter=max_col_letter)
 
     ws.insert_rows(insert_at_row, amount=n_rows)
 
     for i in range(n_rows):
         r = insert_at_row + i
-        ws.row_dimensions[r].height = None  # important pour éviter gros blancs
+        ws.row_dimensions[r].height = None  # ✅ pas de grosses hauteurs
         for c in range(1, max_col + 1):
             tgt = ws.cell(r, c)
-            tgt.value = None
             stl = snap[c - 1]
+            tgt.value = stl["value"]  # ✅ recopie les bullets
             tgt.font = copy(stl["font"])
             tgt.border = copy(stl["border"])
             tgt.fill = copy(stl["fill"])
@@ -322,7 +269,8 @@ def _insert_rows_with_style(ws, insert_at_row, n_rows, style_src_row, max_col_le
             tgt.protection = copy(stl["protection"])
             tgt.alignment = copy(stl["alignment"])
 
-def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=300):
+
+def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col_letter="L", hard_cap_extra=400):
     if title_row is None or rows_needed is None or rows_needed <= 0:
         return 0
 
@@ -334,135 +282,209 @@ def _ensure_section_capacity(ws, title_row, next_title_row, rows_needed, max_col
     extra = min(rows_needed - current, hard_cap_extra)
     insert_at = next_title_row if next_title_row is not None else (ws.max_row + 1)
 
-    # copier une ligne "milieu" pour éviter les séparateurs épais
-    if rows:
-        style_src_row = rows[1] if len(rows) > 1 else rows[0]
-    else:
-        style_src_row = title_row + 1 if title_row + 1 <= ws.max_row else title_row
+    style_src_row = rows[0] if rows else (title_row + 1)
+    if style_src_row > ws.max_row:
+        style_src_row = title_row
 
     _insert_rows_with_style(ws, insert_at, extra, style_src_row, max_col_letter=max_col_letter)
     return extra
 
-def fill_region(ws, rows, values, start_cols, end_cols_override):
-    if not rows:
-        return 0, 0
-    if not values:
-        values = []
 
+def infer_text_start_cols(ws, sample_row, min_col_letter="A", max_col_letter="L"):
+    """
+    ✅ Lit la FT modèle :
+    - ignore les colonnes "marker" (• ou cases options)
+    - récupère les vraies colonnes texte (ex: B, F, H)
+    """
+    c1 = column_index_from_string(min_col_letter)
+    c2 = column_index_from_string(max_col_letter)
+    starts = []
+
+    for c in range(c1, c2 + 1):
+        cell = ws.cell(sample_row, c)
+        v = cell.value
+
+        # marker bullet
+        if _is_marker_value(v):
+            continue
+
+        # case options : border medium sur les 4 côtés => on ignore (c’est le carré)
+        b = cell.border
+        if (b.left.style == "medium" and b.right.style == "medium"
+                and b.top.style == "medium" and b.bottom.style == "medium"
+                and v in (None, "")):
+            continue
+
+        rng = _merged_range_including(ws, sample_row, c)
+        if rng:
+            # on ne garde que la top-left du merge
+            if rng.min_row == sample_row and rng.min_col == c:
+                starts.append(c)
+        else:
+            # cellule seule : on la prend si elle appartient au "texte"
+            # on filtre A et E et G etc via les markers ci-dessus
+            starts.append(c)
+
+    # éviter de prendre des colonnes vides complètement à droite
+    starts = sorted(set(starts))
+    return starts
+
+
+def infer_end_col(ws, row, start_col, fallback_end):
+    rng = _merged_range_including(ws, row, start_col)
+    if rng and rng.min_row == rng.max_row == row and rng.min_col == start_col:
+        return rng.max_col
+    return fallback_end
+
+
+def ensure_merges_for_rows(ws, rows, start_cols, sample_row, fallback_endcols):
     for r in rows:
         for sc in start_cols:
-            endc = end_cols_override.get(sc, sc)
-            _ensure_merge_row(ws, r, sc, endc)
+            endc = infer_end_col(ws, r, sc, fallback_endcols.get(sc, sc))
+            if endc > sc:
+                # unmerge overlap only on this row
+                for rng in list(ws.merged_cells.ranges):
+                    if rng.min_row == r and rng.max_row == r:
+                        if not (rng.max_col < sc or rng.min_col > endc):
+                            try:
+                                ws.unmerge_cells(str(rng))
+                            except Exception:
+                                pass
+                try:
+                    ws.merge_cells(start_row=r, start_column=sc, end_row=r, end_column=endc)
+                except Exception:
+                    pass
 
-    capacity = len(rows) * len(start_cols)
-    n = min(len(values), capacity)
+
+def write_cell_keep_style(ws, row, col, value):
+    rng = _merged_range_including(ws, row, col)
+    r0, c0 = (rng.min_row, rng.min_col) if rng else (row, col)
+    cell = ws.cell(r0, c0)
+    if isinstance(cell, MergedCell):
+        return
+    cell.value = value
+    # on garde la police/alignement du modèle, juste wrap + top
+    al = cell.alignment
+    if hasattr(al, "copy"):
+        cell.alignment = al.copy(wrap_text=True, vertical="top")
+    else:
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+
+def fill_single_column(ws, rows, start_col, values, sample_row, fallback_endcols):
+    if not rows:
+        return
+    ensure_merges_for_rows(ws, rows, [start_col], sample_row, fallback_endcols)
+    n = min(len(values), len(rows))
+    for i in range(n):
+        write_cell_keep_style(ws, rows[i], start_col, values[i])
+
+
+def fill_distributed(ws, rows, start_cols, values, sample_row, fallback_endcols):
+    if not rows or not start_cols:
+        return
+    ensure_merges_for_rows(ws, rows, start_cols, sample_row, fallback_endcols)
 
     i = 0
     for r in rows:
         for sc in start_cols:
-            if i >= n:
-                return n, capacity
-            _write_merged(ws, r, sc, values[i])
+            if i >= len(values):
+                return
+            write_cell_keep_style(ws, r, sc, values[i])
             i += 1
-    return n, capacity
 
-def ensure_merge_row_range(ws, row, col_start_letter, col_end_letter):
-    c1 = column_index_from_string(col_start_letter)
-    c2 = column_index_from_string(col_end_letter)
 
-    txt = None
-    for c in range(c1, c2 + 1):
-        v = ws.cell(row, c).value
-        if isinstance(v, str) and v.strip():
-            txt = v
-            break
+def row_has_visible_style(ws, r, min_col=1, max_col=12):
+    for c in range(min_col, max_col + 1):
+        cell = ws.cell(r, c)
+        b = cell.border
+        f = cell.fill
+        if any(getattr(side, "style", None) for side in [b.left, b.right, b.top, b.bottom]):
+            return True
+        if getattr(f, "patternType", None) not in (None, "none"):
+            return True
+    return False
 
-    _unmerge_overlapping_row(ws, row, c1, c2)
-    try:
-        ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
-    except Exception:
-        pass
 
-    if txt is not None:
-        ws.cell(row, c1).value = txt
+def last_used_row_visual(ws, max_col_letter="L"):
+    max_col = column_index_from_string(max_col_letter)
+    for r in range(ws.max_row, 1, -1):
+        # valeurs ?
+        has_val = any(ws.cell(r, c).value not in (None, "") for c in range(1, max_col + 1))
+        if has_val:
+            return r
+        # styles visibles ?
+        if row_has_visible_style(ws, r, 1, max_col):
+            return r
+    return 1
 
-    cell = ws.cell(row, c1)
-    al = cell.alignment
-    if hasattr(al, "copy"):
-        cell.alignment = al.copy(horizontal="center", vertical="center", wrap_text=False)
-    else:
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
 
-def set_print_area_to_used(ws, max_col_letter="L", min_col_letter="B"):
-    """Zone d'impression basée sur le dernier contenu réel dans B..L (ignore A)."""
-    last_row = last_content_row(ws, min_col_letter=min_col_letter, max_col_letter=max_col_letter)
-    ws.print_area = f"$A$1:${max_col_letter}${last_row}"
-    try:
-        ws.page_setup.fitToWidth = 1
-        ws.page_setup.fitToHeight = 0
-    except Exception:
-        pass
+def shrink_truly_empty_rows(ws, protect_ranges=None, min_col_letter="A", max_col_letter="L", empty_height=12.75):
+    protect_ranges = protect_ranges or []
+    c1 = column_index_from_string(min_col_letter)
+    c2 = column_index_from_string(max_col_letter)
 
-def find_footer_row(ws):
-    """
-    Essaie de repérer la zone "Signature et cachet..." pour la remonter.
-    On cherche des mots-clés dans B..L.
-    """
-    keys = ["signature", "cachet"]
-    max_col = column_index_from_string("L")
+    def is_protected(r):
+        for a, b in protect_ranges:
+            if a <= r <= b:
+                return True
+        return False
+
     for r in range(1, ws.max_row + 1):
-        for c in range(2, max_col + 1):  # B..L
-            v = ws.cell(r, c).value
-            if isinstance(v, str):
-                t = _norm(v)
-                if all(k in t for k in keys):
-                    return r
-    return None
+        if is_protected(r):
+            continue
 
-def pack_footer_up(ws, footer_row, keep_blank_rows=1, min_col_letter="B", max_col_letter="L"):
+        has_val = any(ws.cell(r, c).value not in (None, "") for c in range(c1, c2 + 1))
+        if has_val:
+            continue
+
+        # ✅ si la ligne a des bordures/cases -> on NE touche PAS
+        if row_has_visible_style(ws, r, c1, c2):
+            continue
+
+        ws.row_dimensions[r].height = empty_height
+
+
+def find_footer_block(ws, pub_row):
     """
-    Remonte le footer (signature/cachet) juste après le dernier contenu.
-    On supprime un gros bloc de lignes vides (B..L) entre contenu et footer.
+    Footer = tout ce qui est après "PUBLICITE"
+    On prend du pub_row+1 jusqu’à la dernière ligne qui a du style (cases signature, etc.)
     """
-    if footer_row is None or footer_row <= 5:
-        return 0
+    if pub_row is None:
+        return None, None
 
-    # dernier contenu avant footer
-    content_end = last_content_row(ws, min_col_letter=min_col_letter, max_col_letter=max_col_letter, up_to_row=footer_row - 1)
-    target_footer_row = content_end + keep_blank_rows + 1
+    start = pub_row + 1
 
-    # rien à faire si déjà proche
-    if footer_row - target_footer_row < 5:
-        return 0
-
-    # on ne supprime que si l'intervalle est vide en B..L
-    start_del = target_footer_row
-    end_del = footer_row - 1
-
-    all_blank = True
-    for r in range(start_del, end_del + 1):
-        if row_has_content(ws, r, min_col_letter, max_col_letter):
-            all_blank = False
+    # on trouve la dernière ligne "visuelle" après start
+    end = start
+    for r in range(ws.max_row, start, -1):
+        has_val = any(ws.cell(r, c).value not in (None, "") for c in range(1, 13))
+        has_style = row_has_visible_style(ws, r, 1, 12)
+        if has_val or has_style:
+            end = r
             break
 
-    if not all_blank:
-        # au pire on ne pack pas (on évite de supprimer du contenu)
-        return 0
+    return start, end
 
-    n = end_del - start_del + 1
-    try:
-        ws.delete_rows(start_del, n)
-        return n
-    except Exception:
-        return 0
+
+def add_page_break_before_footer(ws, footer_start):
+    if not footer_start or footer_start <= 2:
+        return
+    # break juste au-dessus du footer
+    ws.row_breaks.brk = []  # on repart propre
+    ws.row_breaks.append(Break(id=footer_start - 1))
+
 
 # ----------------- DATA BUILDERS -----------------
-def build_values(df: pd.DataFrame, row: pd.Series, code_col: str, wrap_width=90):
+def build_values(df: pd.DataFrame, row: pd.Series, code_col: str):
+    """
+    ✅ ordre Excel + split sur \n uniquement
+    """
     if row is None or df is None or df.empty:
         return []
 
     vals = []
-    for col in df.columns:  # ordre Excel
+    for col in df.columns:
         if str(col).strip() == str(code_col).strip():
             continue
 
@@ -476,8 +498,9 @@ def build_values(df: pd.DataFrame, row: pd.Series, code_col: str, wrap_width=90)
         if str(col).strip() == "_":
             continue
 
-        vals.extend(explode_cell_value(val, wrap_width=wrap_width))
+        vals.extend(explode_cell_value(val))
     return vals
+
 
 def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
     if not isinstance(code, str) or code.strip() == "" or code == "Tous":
@@ -511,8 +534,9 @@ def find_row(df, code, code_col_wanted, code_pf_fallback=None, prefer_po=None):
 
     return None
 
-# ----------------- EXCEL GENERATION (DYNAMIC) -----------------
-def genere_ft_excel_dynamic(
+
+# ----------------- EXCEL GENERATION (MODEL LAYOUT) -----------------
+def genere_ft_excel_model(
     veh,
     cab_prod_choice, cab_opt_choice,
     mot_prod_choice, mot_opt_choice,
@@ -525,6 +549,7 @@ def genere_ft_excel_dynamic(
     template_path=TEMPLATE_FALLBACK,
     debug=False,
 ):
+    # --- load template ---
     if template_bytes:
         wb = load_workbook(BytesIO(template_bytes), read_only=False, data_only=False)
     else:
@@ -534,9 +559,8 @@ def genere_ft_excel_dynamic(
         wb = load_workbook(template_path, read_only=False, data_only=False)
 
     ws = wb["date"] if "date" in wb.sheetnames else wb[wb.sheetnames[0]]
-    ws.print_title_rows = None
 
-    # ✅ 1) clear manual page breaks
+    # ✅ on garde l’esprit modèle : pas d’écrasement des styles + pas de "compact signature"
     clear_manual_pagebreaks(ws)
 
     # ---------- build values ----------
@@ -574,25 +598,25 @@ def genere_ft_excel_dynamic(
     gf_codecol = get_col(frigo, "GF_groupe frigo") or frigo.columns[0]
     hay_codecol = get_col(hayons, "HL_hayon elevateur") or hayons.columns[0]
 
-    cab_vals     = build_values(cabines, cab_prod_row, cab_codecol, wrap_width=90)
-    cab_opt_vals = build_values(cabines, cab_opt_row,  cab_codecol, wrap_width=90)
+    cab_vals     = build_values(cabines, cab_prod_row, cab_codecol)
+    cab_opt_vals = build_values(cabines, cab_opt_row,  cab_codecol)
 
-    mot_vals     = build_values(moteurs, mot_prod_row, mot_codecol, wrap_width=90)
-    mot_opt_vals = build_values(moteurs, mot_opt_row,  mot_codecol, wrap_width=90)
+    mot_vals     = build_values(moteurs, mot_prod_row, mot_codecol)
+    mot_opt_vals = build_values(moteurs, mot_opt_row,  mot_codecol)
 
-    ch_vals      = build_values(chassis, ch_prod_row,  ch_codecol,  wrap_width=90)
-    ch_opt_vals  = build_values(chassis, ch_opt_row,   ch_codecol,  wrap_width=90)
+    ch_vals      = build_values(chassis, ch_prod_row,  ch_codecol)
+    ch_opt_vals  = build_values(chassis, ch_opt_row,   ch_codecol)
 
-    caisse_vals      = build_values(caisses, caisse_prod_row, caisse_codecol, wrap_width=95)
-    caisse_opt_vals  = build_values(caisses, caisse_opt_row,  caisse_codecol, wrap_width=95)
+    caisse_vals      = build_values(caisses, caisse_prod_row, caisse_codecol)
+    caisse_opt_vals  = build_values(caisses, caisse_opt_row,  caisse_codecol)
 
-    gf_vals      = build_values(frigo, gf_prod_row, gf_codecol, wrap_width=90)
-    gf_opt_vals  = build_values(frigo, gf_opt_row,  gf_codecol, wrap_width=90)
+    gf_vals      = build_values(frigo, gf_prod_row, gf_codecol)
+    gf_opt_vals  = build_values(frigo, gf_opt_row,  gf_codecol)
 
-    hay_vals     = build_values(hayons, hay_prod_row, hay_codecol, wrap_width=90)
-    hay_opt_vals = build_values(hayons, hay_opt_row,  hay_codecol, wrap_width=90)
+    hay_vals     = build_values(hayons, hay_prod_row, hay_codecol)
+    hay_opt_vals = build_values(hayons, hay_opt_row,  hay_codecol)
 
-    # ---------- locate sections (initial) ----------
+    # ---------- locate sections ----------
     cab_row = _find_title_row(ws, ["cabine"], exclude_keywords=["options"])
     cab_opt_row_t = _find_title_row(ws, ["cabine", "options"])
     car_row = _find_title_row(ws, ["carrosserie"], exclude_keywords=["options"])
@@ -606,17 +630,28 @@ def genere_ft_excel_dynamic(
     # ---------- compute needed rows ----------
     cab_needed = max(len(cab_vals), len(mot_vals), len(ch_vals), 0)
     cab_opt_needed = max(len(cab_opt_vals), len(mot_opt_vals), len(ch_opt_vals), 0)
-
     car_needed = len(caisse_vals)
     car_opt_needed = len(caisse_opt_vals)
 
-    fr_needed = int(math.ceil(len(gf_vals) / 2.0)) if gf_vals else 0
+    # frigo/hayon = liste répartie sur colonnes texte du modèle
+    # on estimera le nb de colonnes d’après la 1ère ligne de la zone
+    fr_rows_preview = _region_rows(ws, fr_row, fr_opt_row_t)
+    hy_rows_preview = _region_rows(ws, hy_row, hy_opt_row_t)
+
+    fr_ncols = 2
+    if fr_rows_preview:
+        fr_ncols = max(1, len(infer_text_start_cols(ws, fr_rows_preview[0])))
+    hy_ncols = 2
+    if hy_rows_preview:
+        hy_ncols = max(1, len(infer_text_start_cols(ws, hy_rows_preview[0])))
+
+    fr_needed = math.ceil(len(gf_vals) / fr_ncols) if gf_vals else 0
     fr_opt_needed = len(gf_opt_vals)
 
-    hy_needed = int(math.ceil(len(hay_vals) / 2.0)) if hay_vals else 0
+    hy_needed = math.ceil(len(hay_vals) / hy_ncols) if hay_vals else 0
     hy_opt_needed = len(hay_opt_vals)
 
-    # ---------- expand sections (BOTTOM -> TOP) ----------
+    # ---------- expand sections (bottom -> top) ----------
     extras = {}
     extras["hy_opt"] = _ensure_section_capacity(ws, hy_opt_row_t, pub_row, hy_opt_needed)
     extras["hy"]     = _ensure_section_capacity(ws, hy_row,     hy_opt_row_t, hy_needed)
@@ -627,7 +662,7 @@ def genere_ft_excel_dynamic(
     extras["cab_opt"]= _ensure_section_capacity(ws, cab_opt_row_t, car_row, cab_opt_needed)
     extras["cab"]    = _ensure_section_capacity(ws, cab_row,    cab_opt_row_t, cab_needed)
 
-    # ---------- re-locate sections (after insertion) ----------
+    # ---------- re-locate after insertion ----------
     cab_row = _find_title_row(ws, ["cabine"], exclude_keywords=["options"])
     cab_opt_row_t = _find_title_row(ws, ["cabine", "options"])
     car_row = _find_title_row(ws, ["carrosserie"], exclude_keywords=["options"])
@@ -638,34 +673,16 @@ def genere_ft_excel_dynamic(
     hy_opt_row_t = _find_title_row(ws, ["hayon", "options"])
     pub_row = _find_title_row(ws, ["publicite"])
 
-    # ✅ fix title merges
-    if cab_row:
-        ensure_merge_row_range(ws, cab_row, "B", "E")
-        ensure_merge_row_range(ws, cab_row, "F", "G")
-        ensure_merge_row_range(ws, cab_row, "H", "L")
-    if car_row:
-        ensure_merge_row_range(ws, car_row, "B", "L")
-    if fr_row:
-        ensure_merge_row_range(ws, fr_row, "B", "L")
-    if hy_row:
-        ensure_merge_row_range(ws, hy_row, "B", "L")
-
     cab_rows = _region_rows(ws, cab_row, cab_opt_row_t)
     cab_opt_rows = _region_rows(ws, cab_opt_row_t, car_row)
-
     car_rows = _region_rows(ws, car_row, car_opt_row_t)
     car_opt_rows = _region_rows(ws, car_opt_row_t, fr_row)
-
     fr_rows = _region_rows(ws, fr_row, fr_opt_row_t)
     fr_opt_rows = _region_rows(ws, fr_opt_row_t, hy_row)
-
     hy_rows = _region_rows(ws, hy_row, hy_opt_row_t)
     hy_opt_rows = _region_rows(ws, hy_opt_row_t, pub_row)
 
-    for rr in [cab_rows, cab_opt_rows, car_rows, car_opt_rows, fr_rows, fr_opt_rows, hy_rows, hy_opt_rows]:
-        reset_row_heights(ws, rr)
-
-    # ---------- write headers ----------
+    # ---------- header mapping ----------
     header_map = {
         "code_pays": "C5",
         "Marque": "C6",
@@ -681,33 +698,98 @@ def genere_ft_excel_dynamic(
         if k in veh.index and pd.notna(veh.get(k)):
             safe_set(ws, addr, veh.get(k))
 
-    # ---------- fill sections ----------
-    colB = column_index_from_string("B")
-    colF = column_index_from_string("F")
-    colH = column_index_from_string("H")
+    # ---------- fill CABINE/MOTEUR/CHASSIS (3 colonnes modèle) ----------
+    if cab_rows:
+        sample = cab_rows[0]
+        starts = infer_text_start_cols(ws, sample)   # ex [B, F, H]
+        starts = sorted(starts)[:3]                  # gauche/milieu/droite
+        # fallback ends depuis le modèle (sample)
+        fallback_endcols = {}
+        for sc in starts:
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols[sc] = rng.max_col if rng else sc
 
-    endE = column_index_from_string("E")
-    endG = column_index_from_string("G")
-    endL = column_index_from_string("L")
+        if len(starts) >= 3:
+            fill_single_column(ws, cab_rows, starts[0], cab_vals, sample, fallback_endcols)
+            fill_single_column(ws, cab_rows, starts[1], mot_vals, sample, fallback_endcols)
+            fill_single_column(ws, cab_rows, starts[2], ch_vals,  sample, fallback_endcols)
 
-    fill_region(ws, cab_rows, cab_vals, [colB], end_cols_override={colB: endE})
-    fill_region(ws, cab_rows, mot_vals, [colF], end_cols_override={colF: endG})
-    fill_region(ws, cab_rows, ch_vals,  [colH], end_cols_override={colH: endL})
+    # ---------- fill CABINE/MOTEUR/CHASSIS OPTIONS ----------
+    if cab_opt_rows:
+        sample = cab_opt_rows[0]
+        starts = infer_text_start_cols(ws, sample)
+        starts = sorted(starts)[:3]
+        fallback_endcols = {}
+        for sc in starts:
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols[sc] = rng.max_col if rng else sc
 
-    fill_region(ws, cab_opt_rows, cab_opt_vals, [colB], end_cols_override={colB: endE})
-    fill_region(ws, cab_opt_rows, mot_opt_vals, [colF], end_cols_override={colF: endG})
-    fill_region(ws, cab_opt_rows, ch_opt_vals,  [colH], end_cols_override={colH: endL})
+        if len(starts) >= 3:
+            fill_single_column(ws, cab_opt_rows, starts[0], cab_opt_vals, sample, fallback_endcols)
+            fill_single_column(ws, cab_opt_rows, starts[1], mot_opt_vals, sample, fallback_endcols)
+            fill_single_column(ws, cab_opt_rows, starts[2], ch_opt_vals,  sample, fallback_endcols)
 
-    fill_region(ws, car_rows, caisse_vals, [colB], end_cols_override={colB: endL})
-    fill_region(ws, car_opt_rows, caisse_opt_vals, [colB], end_cols_override={colB: endL})
+    # ---------- CARROSSERIE full width (texte) ----------
+    if car_rows:
+        sample = car_rows[0]
+        starts = infer_text_start_cols(ws, sample)  # normalement [B]
+        if starts:
+            sc = starts[0]
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols = {sc: rng.max_col if rng else sc}
+            fill_single_column(ws, car_rows, sc, caisse_vals, sample, fallback_endcols)
 
-    fill_region(ws, fr_rows, gf_vals, [colB, colF], end_cols_override={colB: endE, colF: endL})
-    fill_region(ws, fr_opt_rows, gf_opt_vals, [colB], end_cols_override={colB: endL})
+    # ---------- CARROSSERIE OPTIONS ----------
+    if car_opt_rows:
+        sample = car_opt_rows[0]
+        starts = infer_text_start_cols(ws, sample)  # [B]
+        if starts:
+            sc = starts[0]
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols = {sc: rng.max_col if rng else sc}
+            fill_single_column(ws, car_opt_rows, sc, caisse_opt_vals, sample, fallback_endcols)
 
-    fill_region(ws, hy_rows, hay_vals, [colB, colF], end_cols_override={colB: endE, colF: endL})
-    fill_region(ws, hy_opt_rows, hay_opt_vals, [colB], end_cols_override={colB: endL})
+    # ---------- FRIGO (réparti sur colonnes texte du modèle) ----------
+    if fr_rows:
+        sample = fr_rows[0]
+        starts = infer_text_start_cols(ws, sample)  # ex [B, F]
+        fallback_endcols = {}
+        for sc in starts:
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols[sc] = rng.max_col if rng else sc
+        fill_distributed(ws, fr_rows, starts, gf_vals, sample, fallback_endcols)
 
-    # ---------- dimensions ----------
+    # ---------- FRIGO OPTIONS ----------
+    if fr_opt_rows:
+        sample = fr_opt_rows[0]
+        starts = infer_text_start_cols(ws, sample)  # [B]
+        if starts:
+            sc = starts[0]
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols = {sc: rng.max_col if rng else sc}
+            fill_single_column(ws, fr_opt_rows, sc, gf_opt_vals, sample, fallback_endcols)
+
+    # ---------- HAYON (réparti sur colonnes texte du modèle) ----------
+    if hy_rows:
+        sample = hy_rows[0]
+        starts = infer_text_start_cols(ws, sample)  # ex [B, F, I]
+        fallback_endcols = {}
+        for sc in starts:
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols[sc] = rng.max_col if rng else sc
+        fill_distributed(ws, hy_rows, starts, hay_vals, sample, fallback_endcols)
+
+    # ---------- HAYON OPTIONS ----------
+    if hy_opt_rows:
+        sample = hy_opt_rows[0]
+        starts = infer_text_start_cols(ws, sample)  # [B]
+        if starts:
+            sc = starts[0]
+            rng = _merged_range_including(ws, sample, sc)
+            fallback_endcols = {sc: rng.max_col if rng else sc}
+            fill_single_column(ws, hy_opt_rows, sc, hay_opt_vals, sample, fallback_endcols)
+
+    # ---------- DIMENSIONS (safe_set pour merges) ----------
     safe_set(ws, "I5",  veh.get("W int\n utile \nsur plinthe"))
     safe_set(ws, "I6",  veh.get("L int \nutile \nsur plinthe"))
     safe_set(ws, "I7",  veh.get("H int"))
@@ -724,15 +806,7 @@ def genere_ft_excel_dynamic(
     safe_set(ws, "I12", veh.get("Volume"))
     safe_set(ws, "I13", veh.get("palettes 800 x 1200 mm"))
 
-    # ---------- PACK FOOTER (signature/cachet) ----------
-    footer_row = find_footer_row(ws)
-    removed = pack_footer_up(ws, footer_row, keep_blank_rows=1, min_col_letter="B", max_col_letter="L")
-    extras["packed_footer_deleted_rows"] = removed
-
-    # ✅ après delete_rows, on retire les page breaks manuels encore une fois (sécurité)
-    clear_manual_pagebreaks(ws)
-
-    # ---------- images (AFTER layout changes) ----------
+    # ---------- IMAGES ----------
     img_veh_path = resolve_image_path(veh.get("Image Vehicule"), "Image Vehicule")
     img_client_path = resolve_image_path(veh.get("Image Client"), "Image Client")
     img_carbu_path = resolve_image_path(veh.get("Image Carburant"), "Image Carburant")
@@ -758,22 +832,35 @@ def genere_ft_excel_dynamic(
         xl_img_carbu.anchor = "H15"
         ws.add_image(xl_img_carbu)
 
-    # ✅ print area based on real content in B..L (ignore A)
-    set_print_area_to_used(ws, max_col_letter="L", min_col_letter="B")
+    # ---------- FOOTER: on le laisse comme le modèle + page break propre ----------
+    pub_row = _find_title_row(ws, ["publicite"])
+    footer_start, footer_end = find_footer_block(ws, pub_row)
+    if footer_start:
+        add_page_break_before_footer(ws, footer_start)
 
-    # ✅ shrink truly empty rows in B..L (ignore A markers)
-    shrink_empty_rows(ws, max_col_letter="L", min_col_letter="B", empty_height=12.75, from_row=1)
+    # ---------- PRINT AREA: inclut le footer (signatures/cases) ----------
+    last_row = last_used_row_visual(ws, max_col_letter="L")
+    ws.print_area = f"$A$1:$L${last_row}"
+    try:
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+    except Exception:
+        pass
+
+    # ---------- shrink UNIQUEMENT les vraies lignes vides (pas les cases/bordures/footer) ----------
+    protect = []
+    if footer_start and footer_end:
+        protect.append((footer_start, footer_end))
+    shrink_truly_empty_rows(ws, protect_ranges=protect, min_col_letter="A", max_col_letter="L", empty_height=12.75)
 
     if debug:
-        try:
-            safe_set(ws, "A1", f"DEBUG: {extras}")
-        except Exception:
-            pass
+        safe_set(ws, "A1", f"DEBUG extras: {extras}")
 
     output = BytesIO()
     wb.save(output)
     output.seek(0)
     return output, extras
+
 
 # ----------------- APP -----------------
 vehicules, cabines, moteurs, chassis, caisses, frigo, hayons = load_data()
@@ -844,14 +931,14 @@ with col3:
     show_image(img_carbu_path, "Picto carburant")
 
 st.markdown("---")
-st.subheader("Génération de la fiche technique (dynamic)")
+st.subheader("Génération (mise en page = modèle)")
 
-debug_mode = st.checkbox("Afficher debug (lignes insérées)", value=False)
+debug_mode = st.checkbox("Debug (extras)", value=False)
 
 if st.button("⚙️ Générer la FT (Excel)"):
     template_bytes = uploaded_template.getvalue() if uploaded_template else None
 
-    ft_file, extras = genere_ft_excel_dynamic(
+    ft_file, extras = genere_ft_excel_model(
         veh,
         cab_prod_choice, cab_opt_choice,
         mot_prod_choice, mot_opt_choice,
@@ -871,9 +958,8 @@ if st.button("⚙️ Générer la FT (Excel)"):
         filename = f"FT_{codepf}_{APP_VERSION}_{int(time.time())}.xlsx"
 
         st.success("✅ Fiche générée !")
-
         if debug_mode:
-            st.info(f"DEBUG : {extras}")
+            st.info(extras)
 
         st.download_button(
             label="⬇️ Télécharger la fiche Excel",
